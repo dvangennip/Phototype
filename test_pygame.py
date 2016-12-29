@@ -1,8 +1,13 @@
 import pygame
 from pygame.locals import *
-import ft5406
+import sys
 
-ts = ft5406.Touchscreen()
+if (sys.platform == 'darwin'):
+	from mocking import Touchscreen, TS_PRESS, TS_RELEASE, TS_MOVE
+else:
+	from ft5406 import Touchscreen, TS_PRESS, TS_RELEASE, TS_MOVE
+
+ts = Touchscreen()
 
 global gui_font, screen, display_size, do_exit, message, colors
 
@@ -40,7 +45,13 @@ def gui_init ():
 	
 	pygame.init()
 	pygame.mouse.set_visible(False)
-	gui_font = pygame.font.Font('/usr/share/fonts/truetype/freefont/FreeSans.ttf', 16)
+	
+	gui_font = None
+	if (sys.platform == 'darwin'):
+		gui_font = pygame.font.Font('/Library/Fonts/Arial Bold.ttf', 16)
+	else:
+		gui_font = pygame.font.Font('/usr/share/fonts/truetype/freefont/FreeSans.ttf', 16)
+	
 	screen = pygame.display.set_mode((0,0), pygame.FULLSCREEN)
 	gui_draw()
 

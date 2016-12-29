@@ -1,6 +1,7 @@
 import os
 import pygame
 from pygame.locals import *
+import traceback
 
 global colors, images, input_folder, screen, gui_font, current_image, do_exit
 
@@ -53,9 +54,20 @@ def load_images_list ():
 	global images, current_image, input_folder
 
 	images = []  # reset first
-	for file in os.listdir(input_folder):
-		if (file.endswith('.jpg')):
-			images.append(file)
+
+	for dirname, dirnames, filenames in os.walk(input_folder):
+		# editing 'dirnames' list will stop os.walk() from recursing into there
+		if '.git' in dirnames:
+			dirnames.remove('.git')
+		if '.DS_Store' in filenames:
+			filenames.remove('.DS_Store')
+
+		# check all filenames, act on valid ones
+		for filename in filenames:
+			if filename.endswith('.jpg'):
+				file_path = os.path.join(input_folder, dirname, filename)
+				images.append(file_path)
+
 	images.sort()
 
 	# in case an image was deleted, make sure current_image is not out of bounds
@@ -163,15 +175,20 @@ def gui_draw_message (message=None):
 
 """Unless this script is imported, do the following"""
 if __name__ == '__main__':
-	# initialise all components
-	load_images_list()
+	try:
+		# initialise all components
+		load_images_list()
 
-	init()
+		init()
 
-	while (True):
-		handle_input()
-		gui_draw()
-		if (do_exit):
-			break
-		else:
-			pygame.time.wait(50)
+		while (True):
+			handle_input()
+			gui_draw()
+			if (do_exit):
+				break
+			else:
+				pygame.time.wait(50)
+	except Exception:
+		f = open('errors.log', 'a')
+		traceback.print_exc(file=f)  #sys.stdout
+		f.close()
