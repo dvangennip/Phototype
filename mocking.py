@@ -92,6 +92,9 @@ class Touchscreen ():
 	def stop (self):
 		pass
 
+	def poll (self):
+		return []
+
 TS_PRESS   = 1
 TS_RELEASE = 0
 TS_MOVE    = 2
