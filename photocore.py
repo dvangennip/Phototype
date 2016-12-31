@@ -3,6 +3,7 @@
 # ----- IMPORT LIBRARIES ------------------------------------------------------
 
 import os
+import pickle
 import psutil
 import pygame
 from pygame.locals import *
@@ -34,11 +35,12 @@ class Photocore ():
 		self.is_debug = True
 
 		# initiate all subclasses
+		self.data     = DataManager(core=self)
 		self.network  = NetworkManager()
 		self.display  = DisplayManager()
 		self.distance = DistanceSensor()
 		self.input    = InputHandler(core=self)
-		self.images   = ImageManager('../DCIM')
+		self.images   = ImageManager('../DCIM', core=self)
 		self.gui      = GUI(core=self)
 		
 		# init programs
@@ -59,6 +61,7 @@ class Photocore ():
 		# update self
 		
 		# update all subclasses
+		self.data.update()
 		self.network.update()
 		self.display.update()
 		self.distance.update()
@@ -87,6 +90,7 @@ class Photocore ():
 		self.distance.close()
 		self.display.close()
 		self.network.close()
+		self.data.close()
 
 	""" Returns reference to active program """
 	def get_active (self):
@@ -142,6 +146,69 @@ class Photocore ():
 
 	def get_network_state (self):
 		return self.network.get_state_summary()
+
+
+class DataManager ():
+	def __init__ (self, core=None):
+		self.core  = core
+		self.data  = {
+			'log': [],
+			'images': []
+		}
+		self.dirty     = False
+		self.last_save = 0  # timestamp
+		self.min_time_between_saves = 120  # avoid excessive writing to disk
+
+		try:
+			with open('data.bin', 'rb') as f:
+				self.data = pickle.load(f)
+		except IOError as eio:
+			pass  # called when file doesn't exist (yet), which is fine
+		except Exception as e:
+			raise e
+
+	def update (self):
+		if (self.dirty and self.last_save < time.time() - self.min_time_between_saves):
+			self.data['images'] = self.core.images.images  # reference to a list
+			self.save()
+			self.dirty = False
+
+	def close (self):
+		self.save(export=True)
+
+	def set_dirty (self, message=None):
+		if (message is not None):
+			t = time.strftime("%Y-%M-%d %H:%M:%S - ", time.localtime())
+			self.data['log'].append(t + message)
+		self.dirty = True
+
+	def save (self, export=False):
+		try:
+			# regular save
+			with open('data.bin', 'wb') as f:
+				pickle.dump(self.data, f)
+				self.last_save = time.time()
+
+			# export to human-readable file
+			if (export):
+				with open('data.log', 'w') as f:
+					f.write('LOG\n-----------------\n')
+					for log in self.data['log']:
+						f.write(log + '\n')
+
+					f.write('\nIMAGES\n-----------------\n')
+					for img in self.data['images']:
+						f.write(str(img) + '\n')
+		except Exception as e:
+			raise e
+
+	""" Return a matching image based on file path """
+	def get_match (self, file_path):
+		for img in self.data['images']:
+			if (img.file == file_path):
+				return img
+		# without a match
+		return None
 
 
 class NetworkManager ():
@@ -301,7 +368,8 @@ class DistanceSensor ():
 
 
 class ImageManager ():
-	def __init__ (self, input_folder=''):
+	def __init__ (self, input_folder='', core=None):
+		self.core         = core
 		self.images       = []
 		self.input_folder = input_folder
 		self.load_list(self.input_folder)
@@ -337,6 +405,12 @@ class ImageManager ():
 		# if new, append the list
 		if (duplicate == False):
 			p = Image(file_path)
+			# also check if data is available on this image
+			file_match = self.core.data.get_match(file_path)
+			if (file_match is not None):
+				p.set_shown(file_match.shown)
+				p.set_rate(file_match.rate)
+			# add to list
 			self.images.append(p)
 
 	def get_images (self):
@@ -350,7 +424,7 @@ class ImageManager ():
 
 
 class Image ():
-	def __init__ (self, file=None):
+	def __init__ (self, file=None, shown=[], rate=0):
 		self.file      = file
 		self.image     = {
 			'full' : None,  # only load when necessary
@@ -359,29 +433,35 @@ class Image ():
 		self.size      = (0,0)  # pixels x,y
 		self.is_loaded = False
 
+		self.rate      = rate   # default is 0, range is [-1, 1]
+		self.shown     = list(shown)  # list, each item denotes for how long image has been shown
+
 	def get (self, size, smooth=True):
 		# load if necessary
 		if (self.is_loaded is False):
 			self.load()
-		# check if size requires resizing first
-		if (size[0] < self.size[0] or size[1] < self.size[1]):
-			size_string = str(size[0]) + 'x' + str(size[1])
-			if (size_string in self.image):
-				return self.image[size_string]
-			else:
-				img = self.scale(size, smooth)
-				self.image[size_string] = img
-				return img
+
+		# check the required size and make it available
+		if (size == 'thumb'):
+			if (self.image['thumb'] is None):
+				self.image['thumb'] = self.scale((100,100), smooth)
+		elif (size[0] < self.size[0] or size[1] < self.size[1]):
+				size_string = str(size[0]) + 'x' + str(size[1])
+				# check if this resizing is cached already
+				if (size_string in self.image):
+					return self.image[size_string]
+				else:
+					# scale and keep for future use
+					img = self.scale(size, smooth)
+					self.image[size_string] = img
+					return img
+		# without resize
 		return self.image['full']
 
 	def load (self):
 		# load image
 		self.image['full'] = pygame.image.load(self.file)
 		self.size          = self.image['full'].get_size()
-		# check if thumbnail is available
-		#pygame.image.save(Surface, 'filename_size.jpg')
-		# load thumbnail
-
 		self.is_loaded = True
 
 	""" Free up memory by unloading an image no longer needed """
@@ -396,7 +476,7 @@ class Image ():
 				self.image[s] = None
 			else:
 				sizes_to_delete.append(s)
-		# finally, delete sizes (avoids dict size changes during iteration)
+		# finally, delete sizes (separate loop avoids dict size changes during iteration)
 		for sd in sizes_to_delete:
 			del self.image[sd]
 
@@ -432,6 +512,32 @@ class Image ():
 		if (smooth is True):
 			return pygame.transform.smoothscale(self.image['full'], (int(sx), int(sy)))
 		return pygame.transform.scale(self.image['full'], (int(sx), int(sy)))
+
+	""" Up or downvotes an image """
+	def do_rate (self, positive=True, delta=0.1):
+		if (positive):
+			self.rate += delta
+		else:
+			self.rate -= delta
+		# limit to [-1,1] range
+		self.rate = max(min(self.rate, 1), 0)
+
+		return self.rate
+
+	def set_rate (self, rate=0):
+		self.rate = rate
+
+	""" Adds viewings of this image to a list """
+	def was_shown (self, time=0):
+		if (time > 0):
+			self.shown.append(int(time))  # no need for more precision than int
+
+	def set_shown (self, shown=[]):
+		self.shown = list(shown)  # avoids referencing to inbound list object
+
+	""" Gives a default str(this instance) output """
+	def __str__ (self):
+		return self.file + '; rate: ' + str(self.rate) + '; shown: ' + str(self.shown)
 
 
 class InputHandler ():
@@ -781,20 +887,21 @@ class DualDisplay (ProgramBase):
 				'image_new': None,
 				'alpha'    : 0,
 				'since'    : 0,
-				'max_time' : self.default_time
+				'max_time' : self.default_time,
+				'swap'     : False
 			},
 			{  # two
 				'image'    : None,
 				'image_new': None,
 				'alpha'    : 0,
 				'since'    : 0,
-				'max_time' : self.default_time
+				'max_time' : self.default_time,
+				'swap'     : False
 			}
 		]
 
 		self.line_pos        = 0.5
 		self.line_width      = 0
-		self.picker_size     = 0
 		self.picker_pos      = 0.5
 		self.picker_alpha    = 1
 
@@ -802,40 +909,27 @@ class DualDisplay (ProgramBase):
 		dirty = False
 		now = time.time()
 
-		# loop over two image slots to assign, swap, fade, etc.
-		for index, i in enumerate(self.im):
-			if (self.first_run):
-				# make sure there is an image
-				i['image'] = self.core.images.get_random()
-				i['since'] = now
-				if (index == 1):
-					i['max_time'] *= 1.5
+		# pick position of line and picker, based on input
+		# if user drag action started on picker, drag it and let line follow
+		# else, if drag action started elsewhere move the line but leave the picker at its resting position
+		#self.picker_pos = 0.5
+		#self.line_pos = 0.5
 
-			# if an image has been on long enough, swap over
-			if (i['since'] < now - i['max_time'] + self.switch_time):
-				# decide on new image
-				if (i['image_new'] is None):
-					i['image_new'] = self.core.images.get_random()
-				# set alpha for new image fade-in
-				i['alpha'] = max(min((now - (i['since'] + i['max_time'] - self.switch_time)) / self.switch_time, 1), 0)
+		# if user indicates a clear preference, go with that
+		# this means a drag of the picker crosses a threshold (position away from centre)
+		if (self.picker_pos < 0.3 or self.picker_pos > 0.8):
+			# set up for that
+			preferred_image = round(self.picker_pos)  # 0 or 1, if picker > 0.5
+			# rate both images
+			self.im[0].rate(preferred_image == 0)  # True if picker is far left, False otherwise
+			self.im[1].rate(preferred_image == 1)  # vice versa, True if far right
+			self.core.data.set_dirty()
+			# give feedback (both for rating, and swap)
+			# get one image to fade quickly and swap over
+			self.im[ abs(preferred_image - 1) ]['swap'] = True
+			# reset drag of picker (let it go back to default to avoid continued rating for a next duel)
 
-				# once time for current image is up, switch over
-				if (i['since'] < now - i['max_time']):
-					# unload current image
-					if (i['image'] is not None):
-						i['image'].unload()
-					
-					# reassign and reset timers, etc.
-					i['image']     = i['image_new']
-					i['image_new'] = None
-					i['alpha']     = 0
-					i['since']     = now
-					i['max_time']  = self.default_time
-					
-				dirty = True
-		
-		# pick position of line, based on input
-		#new_line_pos = 0.5
+		# decide if line should be shown
 		new_line_width = max(min(25 / pow(self.core.get_distance() + 0.5, 3), 10), 0)
 		if (new_line_width < 0.8):  # no need to consider smaller than this
 			new_line_width = 0
@@ -851,6 +945,39 @@ class DualDisplay (ProgramBase):
 			self.picker_alpha = new_picker_alpha
 			dirty = True
 
+		# loop over two image slots to assign, swap, fade, etc.
+		for index, i in enumerate(self.im):
+			if (self.first_run):
+				# make sure there is an image
+				i['image']     = self.core.images.get_random()
+				i['image_new'] = self.core.images.get_random()
+				i['since']     = now
+				if (index == 1):
+					i['max_time'] *= 1.5
+
+			# if an image has been on long enough, swap over
+			if (i['swap'] or i['since'] < now - i['max_time'] + self.switch_time):
+				# set alpha for new image fade-in
+				i['alpha'] = max(min((now - (i['since'] + i['max_time'] - self.switch_time)) / self.switch_time, 1), 0)
+
+				# once time for current image is up, switch over
+				if (i['swap'] or i['since'] < now - i['max_time']):
+					# unload current image
+					if (i['image'] is not None):
+						i['image'].was_shown(now - i['since'])  # report time since it appeared
+						self.core.data.set_dirty()
+						i['image'].unload()  # free memory
+					
+					# reassign and reset timers, etc.
+					i['image']     = i['image_new']
+					i['image_new'] = self.core.images.get_random()  # decide on new image early
+					i['alpha']     = 0
+					i['since']     = now
+					i['max_time']  = self.default_time
+					i['swap']      = False
+					
+				dirty = True
+		
 		if (self.first_run):
 			self.first_run = False
 
