@@ -1,5 +1,34 @@
 # ----- MOCK FUNCTIONS --------------------------------------------------------
 
+# taken from: https://github.com/pimoroni/python-multitouch/blob/master/library/ft5406.py
+
+from collections import namedtuple
+from pygame.locals import *
+import threading
+import time
+import queue
+
+TOUCH_X = 0
+TOUCH_Y = 1
+
+TouchEvent = namedtuple('TouchEvent', ('timestamp', 'type', 'code', 'value'))
+
+EV_SYN = 0
+EV_ABS = 3
+
+ABS_X = 0
+ABS_Y = 1
+
+ABS_MT_SLOT = 0x2f # 47 MT slot being modified
+ABS_MT_POSITION_X = 0x35 # 53 Center X of multi touch position
+ABS_MT_POSITION_Y = 0x36 # 54 Center Y of multi touch position
+ABS_MT_TRACKING_ID = 0x39 # 57 Unique ID of initiated contact
+
+TS_PRESS   = 1
+TS_RELEASE = 0
+TS_MOVE    = 2
+
+
 class Touch(object):
 	def __init__(self, slot, x, y):
 		self.slot = slot
@@ -84,17 +113,78 @@ class Touches(list):
 
 class Touchscreen ():
 	def __init__ (self):
-		self.touches = Touches([Touch(x, 0, 0) for x in range(10)])
+		self._running     = False
+		self._thread      = None
+		self.position     = Touch(0,0,0)
+		self.touches      = Touches([Touch(x, 0, 0) for x in range(10)])
+		self._event_queue = queue.Queue()
+		self._touch_slot  = 0
+
+	def _run (self):
+		self._running = True
+		while self._running:
+			self.poll()
 
 	def run (self):
-		pass
+		if (self._thread is not None):
+			return
+
+		self._thread = threading.Thread(target=self._run)
+		self._thread.start()
 
 	def stop (self):
-		pass
+		if (self._thread is None):
+			return
+
+		self._running = False
+		self._thread.join()
+		self._thread  = None
+
+	@property
+	def _current_touch (self):
+		return self.touches[self._touch_slot]
+
+	""" added to be able to inject pygame mouse events instead of touchscreen events """
+	def add_events (self, events):
+		for event in events:
+			if (event.type == MOUSEBUTTONDOWN):
+				mousex, mousey = event.pos
+			elif (event.type == MOUSEBUTTONUP):
+				mousex, mousey = event.pos
+			elif (event.type == MOUSEMOTION):
+				mousex, mousey = event.pos
+			#self._event_queue.put(TouchEvent(time.time(), type, code, value))
 
 	def poll (self):
-		return []
+		# events should already be added via the above function
 
-TS_PRESS   = 1
-TS_RELEASE = 0
-TS_MOVE    = 2
+		# handle queue
+		while not self._event_queue.empty():
+			event = self._event_queue.get()
+			self._event_queue.task_done()
+
+			if event.type == EV_SYN: # Sync
+				for touch in self.touches:
+					touch.handle_events()
+				return self.touches
+
+			if event.type == EV_ABS: # Absolute cursor position
+				if event.code == ABS_MT_SLOT:
+					self._touch_slot = event.value
+
+				if event.code == ABS_MT_TRACKING_ID: 
+					self._current_touch.id = event.value
+
+				if event.code == ABS_MT_POSITION_X:
+					self._current_touch.x = event.value
+
+				if event.code == ABS_MT_POSITION_Y:
+					self._current_touch.y = event.value
+
+				if event.code == ABS_X:
+					self.position.x = event.value
+
+				if event.code == ABS_Y:
+					self.position.y = event.value
+
+		return []

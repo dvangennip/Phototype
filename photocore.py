@@ -39,9 +39,9 @@ class Photocore ():
 		self.network  = NetworkManager()
 		self.display  = DisplayManager()
 		self.distance = DistanceSensor()
-		self.input    = InputHandler(core=self)
 		self.images   = ImageManager('../DCIM', core=self)
 		self.gui      = GUI(core=self)
+		self.input    = InputHandler(core=self)
 		
 		# init programs
 		self.programs                = []
@@ -49,6 +49,7 @@ class Photocore ():
 		self.program_preferred_index = 0
 		self.programs.append( StatusProgram(core=self) )
 		self.programs.append( DualDisplay(core=self) )
+		self.programs.append( PhotoSoup(core=self) )
 
 		if len(self.programs) < 1:
 			print('No programs to run, will exit')
@@ -84,13 +85,13 @@ class Photocore ():
 			program.close()
 
 		# close subclasses
+		self.data.close()
 		self.gui.close()
 		self.images.close()
 		self.input.close()
 		self.distance.close()
 		self.display.close()
 		self.network.close()
-		self.data.close()
 
 	""" Returns reference to active program """
 	def get_active (self):
@@ -183,24 +184,21 @@ class DataManager ():
 		self.dirty = True
 
 	def save (self, export=False):
-		try:
-			# regular save
-			with open('data.bin', 'wb') as f:
-				pickle.dump(self.data, f)
-				self.last_save = time.time()
+		# regular save
+		with open('data.bin', 'wb') as f:
+			pickle.dump(self.data, f)
+			self.last_save = time.time()
 
-			# export to human-readable file
-			if (export):
-				with open('data.log', 'w') as f:
-					f.write('LOG\n-----------------\n')
-					for log in self.data['log']:
-						f.write(log + '\n')
+		# export to human-readable file
+		if (export):
+			with open('data.log', 'w') as f:
+				f.write('LOG\n-----------------\n')
+				for log in self.data['log']:
+					f.write(log + '\n')
 
-					f.write('\nIMAGES\n-----------------\n')
-					for img in self.data['images']:
-						f.write(str(img) + '\n')
-		except Exception as e:
-			raise e
+				f.write('\nIMAGES\n-----------------\n')
+				for img in self.data['images']:
+					f.write(str(img) + '\n')
 
 	""" Return a matching image based on file path """
 	def get_match (self, file_path):
@@ -436,7 +434,7 @@ class Image ():
 		self.rate      = rate   # default is 0, range is [-1, 1]
 		self.shown     = list(shown)  # list, each item denotes for how long image has been shown
 
-	def get (self, size, smooth=True):
+	def get (self, size, fit_to_square=False, smooth=True):
 		# load if necessary
 		if (self.is_loaded is False):
 			self.load()
@@ -444,7 +442,7 @@ class Image ():
 		# check the required size and make it available
 		if (size == 'thumb'):
 			if (self.image['thumb'] is None):
-				self.image['thumb'] = self.scale((100,100), smooth)
+				self.image['thumb'] = self.scale((100,100), True, smooth)
 		elif (size[0] < self.size[0] or size[1] < self.size[1]):
 				size_string = str(size[0]) + 'x' + str(size[1])
 				# check if this resizing is cached already
@@ -452,7 +450,7 @@ class Image ():
 					return self.image[size_string]
 				else:
 					# scale and keep for future use
-					img = self.scale(size, smooth)
+					img = self.scale(size, fit_to_square, smooth)
 					self.image[size_string] = img
 					return img
 		# without resize
@@ -483,7 +481,7 @@ class Image ():
 	""" Scales 'img' to fit into box bx/by.
 		This method will retain the original image's aspect ratio
 	    Based on: http://www.pygame.org/pcr/transform_scale/ """
-	def scale (self, box_size, smooth=True):
+	def scale (self, box_size, fit_to_square=False, smooth=True):
 		ix,iy = self.image['full'].get_size()
 		bx,by = box_size
 
@@ -509,9 +507,25 @@ class Image ():
 				sy = by		
 		#print('scaling', box_size, '->', (sx, sy), self.file)
 
+		scaled_img = None
+
 		if (smooth is True):
-			return pygame.transform.smoothscale(self.image['full'], (int(sx), int(sy)))
-		return pygame.transform.scale(self.image['full'], (int(sx), int(sy)))
+			scaled_img = pygame.transform.smoothscale(self.image['full'], (int(sx), int(sy)))
+		else:
+			scaled_img = pygame.transform.scale(self.image['full'], (int(sx), int(sy)))
+		
+		# a to-be-squared image will get the excess part taken off
+		if (fit_to_square and sx != sy):
+			s_left, s_top, s_width, s_height = 0, 0, sx, sy
+			if (sx > sy):
+				s_width = sy
+				s_left  = (sx - sy) / 2  # making sure we get the middle
+			else:
+				s_height = sx
+				s_top    = (sy - sx) / 2
+			scaled_img = scaled_img.subsurface( Rect(s_left, s_top, s_width, s_height) )
+
+		return scaled_img
 
 	""" Up or downvotes an image """
 	def do_rate (self, positive=True, delta=0.1):
@@ -544,6 +558,18 @@ class InputHandler ():
 	def __init__ (self, core=None):
 		self.core = core
 
+		# set up pygame events (block those of no interest to keep sanity/memory)
+		# types kept: QUIT, KEYDOWN, KEYUP, MOUSEMOTION, MOUSEBUTTONDOWN, MOUSEBUTTONUP
+		pygame.event.set_blocked(ACTIVEEVENT)
+		pygame.event.set_blocked(JOYAXISMOTION)
+		pygame.event.set_blocked(JOYBALLMOTION)
+		pygame.event.set_blocked(JOYHATMOTION)
+		pygame.event.set_blocked(JOYBUTTONUP)
+		pygame.event.set_blocked(JOYBUTTONDOWN)
+		pygame.event.set_blocked(VIDEORESIZE)
+		pygame.event.set_blocked(VIDEOEXPOSE)
+		pygame.event.set_blocked(USEREVENT)
+
 		# init touchscreen
 		self.ts = Touchscreen()
 
@@ -560,8 +586,17 @@ class InputHandler ():
 
 		# handle pygame event queue
 		events = pygame.event.get()
+
+		# for a mock run, send events also to touchscreen module
+		# (as pygame events cannot be taken from its queue twice)
+		if (sys.platform == 'darwin'):
+			self.ts.add_events(events)
+
+		# handle pygame events
 		for event in events:
-			if (event.type is KEYDOWN):
+			if (event.type is QUIT):
+				self.core.set_exit(True)
+			elif (event.type is KEYDOWN):
 				if (event.key == K_ESCAPE):
 					self.core.set_exit(True)
 				elif (event.key >= 48 and event.key <= 57):
@@ -631,7 +666,7 @@ class GUI ():
 		self.dirty_areas = []
 
 	def close (self):
-		pass
+		pygame.quit()
 
 	""" The dirty flag should be set if the GUI needs updating """
 	def set_dirty (self, state=True):
@@ -648,13 +683,19 @@ class GUI ():
 		if (self.dirty is True and self.core.is_debug):
 			self.draw_slider(o='left', x=0, y=0, w=800, h=3, r=(self.core.get_distance() / 6.5) )
 
-	def draw_rectangle (self, o='center', x=-1, y=-1, w=50, h=50, c='support', a=1):
+	def draw_rectangle (self, o='center', x=-1, y=-1, w=50, h=50, c='support', a=1, r=True):
 		xpos = self.display_size[0]/2
 		if (x != -1):
-			xpos = x
+			if (r):
+				xpos = x * self.display_size[0]
+			else:
+				xpos = x
 		ypos = self.display_size[1]/2
 		if (y != -1):
-			ypos = y
+			if (r):
+				ypos = y * self.display_size[1]
+			else:
+				ypos = y
 
 		rectangle_surface     = pygame.Surface( (w,h) )
 		rectangle_surface.fill(self.colors[c])
@@ -688,10 +729,10 @@ class GUI ():
 			ypos = y
 
 		# draw background rectangle (whole width)
-		self.draw_rectangle(o=o, x=xpos, y=ypos, w=w, h=h, c=bg, a=a)
+		self.draw_rectangle(o=o, x=xpos, y=ypos, w=w, h=h, c=bg, a=a, r=False)
 		
 		# draw foreground rectangle (partial width)
-		self.draw_rectangle(o=o, x=xpos, y=ypos, w=r*w, h=h, c=fg, a=a)
+		self.draw_rectangle(o=o, x=xpos, y=ypos, w=r*w, h=h, c=fg, a=a, r=False)
 
 		# set flags
 		self.dirty = True
@@ -707,9 +748,9 @@ class GUI ():
 
 		text_surface = None
 		if (s == 'small'):
-			text_surface = self.gui_font.render(text, False, self.colors[fg])
+			text_surface = self.gui_font.render(text, True, self.colors[fg])
 		else:
-			text_surface = self.gui_font_large.render(text, False, self.colors[fg])
+			text_surface = self.gui_font_large.render(text, True, self.colors[fg])
 		
 		text_rect = text_surface.get_rect()
 		if (o == 'left'):
@@ -732,7 +773,7 @@ class GUI ():
 			elif (o == 'right'):
 				pos_x = xpos + padding
 				pos_y = ypos - padding
-			self.draw_rectangle(o=o, x=pos_x, y=pos_y, w=size_x, h=size_y, c=bg)
+			self.draw_rectangle(o=o, x=pos_x, y=pos_y, w=size_x, h=size_y, c=bg, r=False)
 
 		# finally, draw text (onto background)
 		self.screen.blit(text_surface, text_rect)
@@ -741,11 +782,11 @@ class GUI ():
 		self.dirty = True
 		self.dirty_areas.append(text_rect)
 
-	def draw_image (self, img=None, o='center', pos=(0.5,0.5), size=(1,1), mask=None, a=1):
+	def draw_image (self, img=None, o='center', pos=(0.5,0.5), size=(1,1), mask=None, a=1, sq=False):
 		# decide on place and size
 		img_size = (size[0] * self.display_size[0], size[1] * self.display_size[1])
 		# get image (resized)
-		img_scaled = img.get(img_size)
+		img_scaled = img.get(img_size, sq)
 
 		# determine position
 		xpos = int(pos[0] * self.display_size[0])
@@ -1022,21 +1063,40 @@ class DualDisplay (ProgramBase):
 		
 		# draw middle line
 		if (self.line_width > 0):
-			line_x = self.line_pos * self.gui.display_size[0]
-			self.gui.draw_rectangle(o='center', x=line_x, y=-1, w=self.line_width, h=480, c='foreground')
+			self.gui.draw_rectangle(o='center', x=self.line_pos, y=-1, w=self.line_width, h=480, c='foreground')
 
 		# draw picker
 		if (self.picker_alpha != 0):
-			picker_x = self.picker_pos * self.gui.display_size[0]
 			# draw picker background elements
 			if (self.picker_pos != self.line_pos):
 				# draw two dotted lines from picker to original spot
 				# draw 'resting' picker in original spot
-				self.gui.draw_rectangle(o='center', x=line_x, y=-1, w=100, h=100, c='foreground',
+				self.gui.draw_rectangle(o='center', x=self.line_pos, y=-1, w=100, h=100, c='foreground',
 					a=self.picker_alpha * 0.5)
 			# draw picker on top
-			self.gui.draw_rectangle(o='center', x=picker_x, y=-1, w=100, h=100, c='foreground',
+			self.gui.draw_rectangle(o='center', x=self.picker_pos, y=-1, w=100, h=100, c='foreground',
 					a=self.picker_alpha)
+
+
+class PhotoSoup (ProgramBase):
+	def __init__ (self, core=None):
+		super().__init__(core)
+
+		self.image = None
+
+	def update (self):
+		dirty = False
+		now = time.time()
+
+		if (self.image is None):
+			self.image = self.core.images.get_random()
+
+		# indicate update is necessary, if so, always do full to avoid glitches
+		if (dirty):
+			super().update()
+
+	def draw (self):
+		self.gui.draw_image(self.image, pos=(0.5, 0.5), size=(0.5,0.5), sq=True)
 
 
 # ----- MAIN ------------------------------------------------------------------
