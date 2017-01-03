@@ -369,6 +369,7 @@ class ImageManager ():
 	def __init__ (self, input_folder='', core=None):
 		self.core         = core
 		self.images       = []
+		self.recent       = []
 		self.input_folder = input_folder
 		self.load_list(self.input_folder)
 
@@ -416,6 +417,24 @@ class ImageManager ():
 
 	def get_random (self):
 		return self.images[ random.randint(0, len(self.images)-1) ]
+
+	""" Returns an image and checks if it's not similar to recent images returned """
+	def get_next (self):
+		# get an image to return, and make sure it wasn't returned recently
+		unique = False
+		while not unique:
+			img = self.get_random()
+			if (img.file not in self.recent):
+				unique = True
+		
+		# keep track of which image gets returned
+		self.recent.append(img.file)
+		# make sure the tracking is limited to avoid images not returning any time soon
+		if (len(self.recent) > 10):
+			self.recent.pop(0)  # remove first (oldest) element in list
+
+		return img
+
 
 	def get_count (self):
 		return len(self.images)
@@ -681,7 +700,7 @@ class GUI ():
 	def draw (self):
 		# for testing only
 		if (self.dirty is True and self.core.is_debug):
-			self.draw_slider(o='left', x=0, y=0, w=800, h=3, r=(self.core.get_distance() / 6.5) )
+			self.draw_slider(o='left', x=0, y=0, w=800, h=3, r=(self.core.get_distance() / 6.5))
 
 	def draw_rectangle (self, o='center', x=-1, y=-1, w=50, h=50, c='support', a=1, r=True):
 		xpos = self.display_size[0]/2
@@ -707,9 +726,8 @@ class GUI ():
 		else:  # assume center
 			rectangle_rect.center   = (xpos, ypos)
 
-		# set alpha if requested
-		if (a != 1):
-			rectangle_surface.set_alpha(min(max(a*255,0),255))
+		# set alpha
+		rectangle_surface.set_alpha(min(max(a*255,0),255))
 
 		self.screen.blit(rectangle_surface, rectangle_rect)
 		
@@ -795,9 +813,8 @@ class GUI ():
 			xpos = xpos - img_scaled.get_width() / 2
 			ypos = ypos - img_scaled.get_height() / 2
 
-		# set alpha if requested
-		if (a != 1):
-			img_scaled.set_alpha(min(max(a*255,0),255))
+		# set alpha (always set, to avoid remnant settings causing trouble)
+		img_scaled.set_alpha(min(max(a*255,0),255))
 
 		# draw to screen
 		#print('draw_image', xpos, ypos, img_scaled.get_size())
@@ -852,6 +869,9 @@ class ProgramBase ():
 			self.gui.set_dirty()
 		# update time since last update
 		self.last_update = time.time()
+		# set other variables
+		if (self.first_run):
+			self.first_run = False
 
 	""" code to run when program becomes active """
 	def make_active (self):
@@ -920,7 +940,7 @@ class DualDisplay (ProgramBase):
 		super().__init__(core)
 		
 		self.default_time    = 10
-		self.switch_time     = 1
+		self.switch_time     = 2
 
 		self.im = [
 			{  # one
@@ -990,8 +1010,8 @@ class DualDisplay (ProgramBase):
 		for index, i in enumerate(self.im):
 			if (self.first_run):
 				# make sure there is an image
-				i['image']     = self.core.images.get_random()
-				i['image_new'] = self.core.images.get_random()
+				i['image']     = self.core.images.get_next()
+				i['image_new'] = self.core.images.get_next()
 				i['since']     = now
 				if (index == 1):
 					i['max_time'] *= 1.5
@@ -1010,17 +1030,21 @@ class DualDisplay (ProgramBase):
 						i['image'].unload()  # free memory
 					
 					# reassign and reset timers, etc.
+					i['swap']      = False
 					i['image']     = i['image_new']
-					i['image_new'] = self.core.images.get_random()  # decide on new image early
+					i['image_new'] = self.core.images.get_next()  # decide on new image early
 					i['alpha']     = 0
 					i['since']     = now
 					i['max_time']  = self.default_time
-					i['swap']      = False
+					
+					# adjust max time in case the two sides are too close together for swapping
+					if (index == 1):
+						t1 = self.im[0]['since'] + self.im[0]['max_time']
+						t2 = self.im[1]['since'] + self.im[1]['max_time']
+						if (abs(t1-t2) < self.default_time / 2):
+							i['max_time'] += 1
 					
 				dirty = True
-		
-		if (self.first_run):
-			self.first_run = False
 
 		# indicate update is necessary, if so, always do full to avoid glitches
 		if (dirty):
@@ -1088,15 +1112,16 @@ class PhotoSoup (ProgramBase):
 		dirty = False
 		now = time.time()
 
-		if (self.image is None):
-			self.image = self.core.images.get_random()
+		if (self.image is None or now > self.last_update + 5):
+			self.image = self.core.images.get_next()
+			dirty = True
 
 		# indicate update is necessary, if so, always do full to avoid glitches
 		if (dirty):
-			super().update()
+			super().update(full=True)
 
 	def draw (self):
-		self.gui.draw_image(self.image, pos=(0.5, 0.5), size=(0.5,0.5), sq=True)
+		self.gui.draw_image(self.image, pos=(0.5, 0.5), size=(1, 1), sq=False)
 
 
 # ----- MAIN ------------------------------------------------------------------
