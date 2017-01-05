@@ -2,6 +2,7 @@
 
 # ----- IMPORT LIBRARIES ------------------------------------------------------
 
+from math import sqrt
 import os
 import pickle
 import psutil
@@ -17,13 +18,29 @@ if (sys.platform == 'darwin'):
 	from mocking import Touchscreen, TS_PRESS, TS_RELEASE, TS_MOVE
 else:
 	from ft5406 import Touchscreen, TS_PRESS, TS_RELEASE, TS_MOVE
+	# set display explicitly to allow starting this script via SSH with output on Pi display
+	# not necessary otherwise. requires running with sudo on the remote terminal.
+	os.environ['SDL_VIDEODRIVER'] = 'fbcon'
 
 #from subprocess import Popen
 
 
 # ----- GLOBAL VARIABLES ---------------------------------------------
 
-# 
+# make code to switch modes without user intervention
+
+# get finger position code working, implement dragging
+
+# DualDisplay: don't swap over if dragging/user interaction is active -> check again
+
+# make the squared get image function work properly (returns too small now)
+
+# check if possible to generate circular images
+# (perhaps via drawing of white circle on black, with black set to transparent)
+
+# make an image reduction script that takes in new images and preps those
+#   use pygame.image.save(surface, filename)
+#   consider adding webserver along with this
 
 # ----- CLASSES ---------------------------------------------------------------
 
@@ -45,11 +62,12 @@ class Photocore ():
 		
 		# init programs
 		self.programs                = []
-		self.program_active_index    = 0
-		self.program_preferred_index = 0
+		self.program_active_index    = 1
+		self.program_preferred_index = 1
+		self.programs.append( BlankScreen(  core=self) )
 		self.programs.append( StatusProgram(core=self) )
-		self.programs.append( DualDisplay(core=self) )
-		self.programs.append( PhotoSoup(core=self) )
+		self.programs.append( DualDisplay(  core=self) )
+		self.programs.append( PhotoSoup(    core=self) )
 
 		if len(self.programs) < 1:
 			print('No programs to run, will exit')
@@ -419,17 +437,25 @@ class ImageManager ():
 		return self.images[ random.randint(0, len(self.images)-1) ]
 
 	""" Returns an image and checks if it's not similar to recent images returned """
-	def get_next (self):
+	def get_next (self, rated=False):
 		# get an image to return, and make sure it wasn't returned recently
-		unique = False
-		while not unique:
+		acceptable = False
+		while not acceptable:
 			img = self.get_random()
 			if (img.file not in self.recent):
-				unique = True
+				acceptable = True
+
+				# also consider the image rating to determine whether to accept it
+				# (so higher rating => higher chance of acceptance)
+				if (rated):
+					# do via a random check; default .5 chance yes/no, with changed odds based on rating
+					r = random.random() + (img.rate / 4)
+					if (r < 0.5):
+						acceptable = False  # we'll stay in the loop and try again
 		
 		# keep track of which image gets returned
 		self.recent.append(img.file)
-		# make sure the tracking is limited to avoid images not returning any time soon
+		# make sure the tracking list is limited to avoid images not returning any time soon
 		if (len(self.recent) > 10):
 			self.recent.pop(0)  # remove first (oldest) element in list
 
@@ -547,13 +573,13 @@ class Image ():
 		return scaled_img
 
 	""" Up or downvotes an image """
-	def do_rate (self, positive=True, delta=0.1):
+	def do_rate (self, positive=True, delta=0.2):
 		if (positive):
 			self.rate += delta
 		else:
 			self.rate -= delta
-		# limit to [-1,1] range
-		self.rate = max(min(self.rate, 1), 0)
+		# limit to [0,1] range
+		self.rate = max(min(self.rate, 1), -1)
 
 		return self.rate
 
@@ -573,9 +599,39 @@ class Image ():
 		return self.file + '; rate: ' + str(self.rate) + '; shown: ' + str(self.shown)
 
 
+class Vector3 ():
+	def __init__ (self, x, y, z):
+		self.set(x,y,z)
+
+	def set (self, x, y, z):
+		self.x = x
+		self.y = y
+		self.z = z
+
+	def copy (self):
+		return Vector3(self.x, self.y, self.z)
+
+	def __str__ (self):
+		return '(x: {0.x}, y: {0.y}, z: {0.z})'.format(self)
+
+
 class InputHandler ():
 	def __init__ (self, core=None):
 		self.core = core
+
+		self.REST          = 0
+		self.MOVING        = 1
+		self.DRAGGING      = 2
+		self.RELEASED      = 3
+		self.RELEASED_TAP  = 4
+		self.RELEASED_HOLD = 5
+		self.RELEASED_DRAG = 6
+
+		self.pos        = Vector3(0,0,0)  # x, y, timestamp
+		self.state      = self.REST
+		self.drag       = []  # list of positions, empty if no drag active
+		self.last_touch = 0
+		self.t          = time.time  # use a reference to avoid issues in touch_handler
 
 		# set up pygame events (block those of no interest to keep sanity/memory)
 		# types kept: QUIT, KEYDOWN, KEYUP, MOUSEMOTION, MOUSEBUTTONDOWN, MOUSEBUTTONUP
@@ -597,11 +653,19 @@ class InputHandler ():
 			touch.on_release = self.touch_handler
 			touch.on_move    = self.touch_handler
 
+		# run polling in another thread that calls touch_handler whenever an event comes in
 		self.ts.run()
 
 	def update (self):
+		now = time.time()
+
 		# handle touchscreen events
-		# incorporate outcome of handler events
+		# if last touch event was long ago (> n seconds), set to resting state
+		if (self.last_touch < now - 0.25 and self.state != self.DRAGGING):
+			self.state = self.REST
+		else:
+			# indicate to programs that a click occured, drag started, or ended
+			pass
 
 		# handle pygame event queue
 		events = pygame.event.get()
@@ -609,7 +673,7 @@ class InputHandler ():
 		# for a mock run, send events also to touchscreen module
 		# (as pygame events cannot be taken from its queue twice)
 		if (sys.platform == 'darwin'):
-			self.ts.add_events(events)
+			pass #self.ts.add_events(events)
 
 		# handle pygame events
 		for event in events:
@@ -624,14 +688,48 @@ class InputHandler ():
 	def close (self):
 		self.ts.stop()
 
-	def touch_handler(event, touch):
-		touch_info = '(slot: ' + str(touch.slot) +', id: '+ str(touch.id) +', valid: '+ str(touch.valid) +', x: '+ str(touch.x) +', y: '+ str(touch.y) +')'
-		if event == TS_PRESS:
-			print("PRESS",   touch, touch_info)
-		if event == TS_RELEASE:
-			print("RELEASE", touch, touch_info)
-		if event == TS_MOVE:
-			print("MOVE",    touch, touch_info)
+	def touch_handler(self, event, touch):
+		# touch.slot, touch.id (uniquem or -1 after release), touch.valid, touch.x, touch.y
+		self.last_touch = self.t()
+		
+		# to simplify matters, limit scope to slot 0 (that is, the first finger to touch screen)
+		if (touch.slot == 0):
+			self.pos.set(touch.x, touch.y, 0)
+			
+			if event == TS_PRESS:
+				# reset
+				self.drag = []
+
+				self.state = self.DRAGGING
+				self.drag.append(self.pos.copy())
+			elif event == TS_MOVE:
+				if (self.state == self.REST or self.state >= self.RELEASED):  # presumably only the case on non-touch interfaces (e.g., a mouse)
+					self.state = self.MOVING
+				else:
+					self.state = self.DRAGGING
+					self.drag.append(self.pos.copy())
+			elif event == TS_RELEASE:
+				self.drag.append(self.pos.copy())
+
+				# calculate info on now released drag
+				distance = 0
+				time     = 0
+
+				if (len(self.drag) > 1):
+					distance = sqrt(pow(self.drag[0].x - self.drag[len(self.drag)-1].x, 2) + pow(self.drag[0].y - self.drag[len(self.drag)-1].y, 2))
+					time     = self.drag[len(self.drag)-1].z - self.drag[0].z
+
+				# interpret the info
+				if (distance > 50):
+					# this was a drag, now released
+					self.state = self.RELEASED_DRAG
+				else:
+					if (time < 1.5):
+						# this was a tap / click
+						self.state = self.RELEASED_TAP
+					else:
+						# this was a tap and hold
+						self.state = self.RELEASED_HOLD
 
 
 class GUI ():
@@ -699,10 +797,14 @@ class GUI ():
 	""" Default draw function can be used for overlays, etc. """
 	def draw (self):
 		# for testing only
-		if (self.dirty is True and self.core.is_debug):
+		if (self.dirty and self.core.is_debug):
+			# draw distance slider
 			self.draw_slider(o='left', x=0, y=0, w=800, h=3, r=(self.core.get_distance() / 6.5))
+			# draw touch position
+			if (self.core.input.state > self.core.input.REST):
+				self.draw_circle(x=self.core.input.pos.x, y=self.core.input.pos.y, r=False)
 
-	def draw_rectangle (self, o='center', x=-1, y=-1, w=50, h=50, c='support', a=1, r=True):
+	def draw_rectangle (self, o='center', x=-1, y=-1, w=20, h=20, c='support', a=1, r=True, surf=None):
 		xpos = self.display_size[0]/2
 		if (x != -1):
 			if (r):
@@ -716,9 +818,14 @@ class GUI ():
 			else:
 				ypos = y
 
-		rectangle_surface     = pygame.Surface( (w,h) )
-		rectangle_surface.fill(self.colors[c])
-		rectangle_rect        = rectangle_surface.get_rect()
+		# create a new surface or use the one supplied
+		rectangle_surface = None
+		if (surf is None):
+			rectangle_surface = pygame.Surface( (w,h) )
+			rectangle_surface.fill(self.colors[c])
+		else:
+			rectangle_surface = surf 
+		rectangle_rect = rectangle_surface.get_rect()
 		if (o == 'left'):
 			rectangle_rect.topleft  = (xpos, ypos)
 		elif (o == 'right'):
@@ -737,6 +844,37 @@ class GUI ():
 
 		# return surface and rectangle for future reference if need be
 		return (rectangle_surface, rectangle_rect)
+
+	def draw_surface (self, surf=None, o='center', x=-1, y=-1, a=1, r=True):
+		return self.draw_rectangle(o=o, x=x, y=y, a=a, r=r, surf=surf)
+
+	def draw_circle (self, o='center', x=-1, y=-1, rad=10, c='support', a=1, r=True):
+		xpos = self.display_size[0]/2
+		if (x != -1):
+			if (r):
+				xpos = x * self.display_size[0]
+			else:
+				xpos = x
+		ypos = self.display_size[1]/2
+		if (y != -1):
+			if (r):
+				ypos = y * self.display_size[1]
+			else:
+				ypos = y
+
+		circle_rect = pygame.draw.circle(self.screen, self.colors[c], (int(xpos), int(ypos)), int(rad), 0)
+
+		# set alpha
+		#rectangle_surface.set_alpha(min(max(a*255,0),255))
+
+		#self.screen.blit(rectangle_surface, rectangle_rect)
+		
+		# set flags
+		self.dirty = True
+		self.dirty_areas.append(circle_rect)
+
+		# return surface and rectangle for future reference if need be
+		return (circle_rect)
 
 	def draw_slider (self, o='center', x=-1, y=-1, w=100, h=20, r=.5, fg='support', bg='background', a=1):
 		xpos = self.display_size[0]/2
@@ -858,30 +996,34 @@ class ProgramBase ():
 		self.gui         = core.gui
 		self.is_active   = False
 		self.last_update = 0  # seconds since epoch
+		self.dirty       = True
 		self.first_run   = True
 
 	""" code to run every turn, needs to signal whether a gui update is needed """
-	def update (self, full=False):
+	def update (self, dirty=True, full=False):
 		# always trigger update in absence of better judgement
 		if (full):
 			self.gui.set_dirty_full()
-		else:
+		elif (dirty):
 			self.gui.set_dirty()
 		# update time since last update
 		self.last_update = time.time()
 		# set other variables
+		self.dirty = False
 		if (self.first_run):
 			self.first_run = False
 
 	""" code to run when program becomes active """
 	def make_active (self):
 		self.is_active = True
+		self.dirty     = True
 		self.first_run = True
 		self.gui.set_dirty_full()
 
 	""" code to run when this program ceases to be active """
 	def make_inactive (self):
 		self.is_active = False
+		self.dirty     = False
 		self.first_run = True
 		self.gui.set_dirty_full()
 
@@ -891,6 +1033,11 @@ class ProgramBase ():
 
 	def draw (self):
 		pass
+
+
+class BlankScreen (ProgramBase):
+	def update (self):
+		pass  # do nothing (relies on GUI class providing a blank canvas on first run)
 
 
 class StatusProgram (ProgramBase):
@@ -961,63 +1108,130 @@ class DualDisplay (ProgramBase):
 			}
 		]
 
-		self.line_pos        = 0.5
-		self.line_width      = 0
-		self.picker_pos      = 0.5
-		self.picker_alpha    = 1
+		self.line_pos           = 0.5
+		self.line_width         = 0
+		self.line_pos           = 0.5
+		self.last_line_pos      = 0.5
+		self.picker_plus_surf_n = None
+		self.picker_plus_surf_a = None
+		self.picker_plus_pos    = 0.5
+		self.picker_min_pos     = 0.5
+		self.picker_min_surf_n  = None
+		self.picker_min_surf_a  = None
+		self.picker_alpha       = 1
+		self.preferred_image    = None
+		self.last_swap          = 0
 
 	def update (self):
-		dirty = False
-		now = time.time()
+		self.dirty  = False
+		interactive = False
+		now         = time.time()
+		check_for_swap_over = False
+		settle_line_pos     = False
 
-		# pick position of line and picker, based on input
-		# if user drag action started on picker, drag it and let line follow
-		# else, if drag action started elsewhere move the line but leave the picker at its resting position
-		#self.picker_pos = 0.5
-		#self.line_pos = 0.5
+		# is state interactive?
+		if (self.core.input.state > self.core.input.REST):
+			self.dirty  = True
+			interactive = True
+
+		# pick position of line, based on input
+		# if user drag action started near the line, drag it and let line follow
+		if (self.core.input.state >= self.core.input.DRAGGING):
+			# first check if all this actually started close to the line's resting position
+			start_x = abs(self.core.input.drag[0].x - self.gui.display_size[0]/2)
+			if (start_x < 50):
+				self.line_pos = self.core.input.pos.x / self.gui.display_size[0]
+
+				if (self.core.input.state == self.core.input.RELEASED_DRAG):
+					# begin rating, feedback, swap over
+					check_for_swap_over = True
+			else:
+				settle_line_pos = True
+		else:
+			settle_line_pos = True
+		
+		# bring line position back to normal, without abrupt change
+		if (settle_line_pos):
+			# get extra amount over .5, and take a portion of that off
+			self.line_pos = self.line_pos + 0.2 * (0.5 - self.line_pos)
+
+		# picker position depends on line
+		self.picker_plus_pos = 0.5 + 0.8 * (self.line_pos - 0.5)
+		self.picker_min_pos  = 0.5 + 1.2 * (self.line_pos - 0.5)
 
 		# if user indicates a clear preference, go with that
-		# this means a drag of the picker crosses a threshold (position away from centre)
-		if (self.picker_pos < 0.3 or self.picker_pos > 0.8):
+		# this means a drag of the line crosses a threshold (position away from centre)
+		if (self.line_pos < 0.15 or self.line_pos > 0.85):
 			# set up for that
-			preferred_image = round(self.picker_pos)  # 0 or 1, if picker > 0.5
-			# rate both images
-			self.im[0].rate(preferred_image == 0)  # True if picker is far left, False otherwise
-			self.im[1].rate(preferred_image == 1)  # vice versa, True if far right
-			self.core.data.set_dirty()
-			# give feedback (both for rating, and swap)
-			# get one image to fade quickly and swap over
-			self.im[ abs(preferred_image - 1) ]['swap'] = True
-			# reset drag of picker (let it go back to default to avoid continued rating for a next duel)
+			self.preferred_image = int(self.line_pos < 0.5)  # 1 or 0, if line > 0.5
+
+			# do actual rating and swap
+			if (check_for_swap_over):
+				# rate both images
+				self.im[0]['image'].do_rate(self.preferred_image == 0)  # True if line is far right, False otherwise
+				self.im[1]['image'].do_rate(self.preferred_image == 1)  # vice versa, True if far left
+				self.core.data.set_dirty()
+				# give feedback (both for rating, and swap)
+				# get one image to fade quickly and swap over
+				self.im[ abs(self.preferred_image - 1) ]['swap'] = True
+				# reset drag of line (let it go back to default to avoid continued rating for a next duel)
+				# TODO
+				self.last_swap = now
+
+			self.dirty = True
+		else:
+			self.preferred_image = None
+
+		# make sure any change in line position is registered as change
+		if (self.line_pos != self.last_line_pos):
+			self.last_line_pos = self.line_pos
+			self.dirty = True
 
 		# decide if line should be shown
-		new_line_width = max(min(25 / pow(self.core.get_distance() + 0.5, 3), 10), 0)
-		if (new_line_width < 0.8):  # no need to consider smaller than this
+		new_line_width = max(min(20 / pow(self.core.get_distance() + 0.5, 3), 6), 0)
+		if (interactive):
+			# make it fade in
+			new_line_width = min(self.line_width + 1, 6)
+		elif (new_line_width < 0.8):  # no need to consider smaller than this
 			new_line_width = 0
-		if (new_line_width != self.line_width):  # only update when necessary
+		# only update when necessary
+		if (new_line_width != self.line_width):
 			self.line_width = new_line_width
-			dirty = True
+			
+			self.dirty = True
 		
 		# decide if picker should be shown
 		new_picker_alpha = max(min(-10/3 * self.core.get_distance() + 8/3, 1), 0)
-		if (new_picker_alpha < .004):  # no need to consider smaller than this
+		if (interactive):
+			# make it fade in
+			new_picker_alpha = min(self.picker_alpha + 0.1, 1)
+		elif (new_picker_alpha < .004):  # no need to consider smaller than this
 			new_picker_alpha = 0
+		# only update when necessary
 		if (new_picker_alpha != self.picker_alpha):
 			self.picker_alpha = new_picker_alpha
-			dirty = True
+			
+			self.dirty = True
 
 		# loop over two image slots to assign, swap, fade, etc.
 		for index, i in enumerate(self.im):
 			if (self.first_run):
 				# make sure there is an image
-				i['image']     = self.core.images.get_next()
-				i['image_new'] = self.core.images.get_next()
+				i['image']     = self.core.images.get_next(rated=True)
+				i['image_new'] = self.core.images.get_next(rated=True)
 				i['since']     = now
 				if (index == 1):
 					i['max_time'] *= 1.5
 
 			# if an image has been on long enough, swap over
-			if (i['swap'] or i['since'] < now - i['max_time'] + self.switch_time):
+			# but don't do so if user is interacting with the device
+			if (i['swap'] is False and interactive):
+				# extend max time such that it lasts until now + 2 seconds (plus, take into account switch time)
+				if (i['since'] + i['max_time'] < now + self.switch_time + 2):
+					i['max_time'] = (now + self.switch_time + 2) - i['since']
+					# also set alpha in case it was about to switch
+					i['alpha']    = 0
+			elif (i['swap'] or i['since'] < now - i['max_time'] + self.switch_time):
 				# set alpha for new image fade-in
 				i['alpha'] = max(min((now - (i['since'] + i['max_time'] - self.switch_time)) / self.switch_time, 1), 0)
 
@@ -1032,7 +1246,7 @@ class DualDisplay (ProgramBase):
 					# reassign and reset timers, etc.
 					i['swap']      = False
 					i['image']     = i['image_new']
-					i['image_new'] = self.core.images.get_next()  # decide on new image early
+					i['image_new'] = self.core.images.get_next(rated=True)  # decide on new image early
 					i['alpha']     = 0
 					i['since']     = now
 					i['max_time']  = self.default_time
@@ -1044,19 +1258,67 @@ class DualDisplay (ProgramBase):
 						if (abs(t1-t2) < self.default_time / 2):
 							i['max_time'] += 1
 					
-				dirty = True
+				self.dirty = True
 
 		# indicate update is necessary, if so, always do full to avoid glitches
-		if (dirty):
+		if (self.dirty):
 			super().update(full=True)
 
+	def make_active (self):
+		# draw the picker surfaces in advance for later reference
+		self.picker_plus_surf_n = self.get_picker_surface(False, True)
+		self.picker_plus_surf_a = self.get_picker_surface(True, True)
+		self.picker_min_surf_n  = self.get_picker_surface(False, False)
+		self.picker_min_surf_a  = self.get_picker_surface(True, False)
+
+		super().make_active()
+
 	def make_inactive (self):
+		# reset variables to None to free memory
+		self.picker_plus_surf_n = None
+		self.picker_plus_surf_a = None
+		self.picker_min_surf_n  = None
+		self.picker_min_surf_a  = None
+
 		for i in self.im:
 			if (i['image'] is not None):
 				i['image'].unload()
 			if (i['image_new'] is not None):
 				i['image_new'].unload()
 		super().make_inactive()
+
+	def get_picker_surface (self, armed=False, positive=False):
+		back_color  = self.gui.colors['foreground']
+		front_color = self.gui.colors['support']
+		if (positive):
+			front_color = self.gui.colors['good']
+		if (armed):
+			back_color = self.gui.colors['support']
+			front_color = self.gui.colors['foreground']
+		
+		surface = pygame.Surface((60, 60))
+		
+		# fill black, then set black color as transparent
+		surface.fill(self.gui.colors['background'])
+		surface.set_colorkey(self.gui.colors['background'], pygame.RLEACCEL)
+
+		# draw circle
+		pygame.draw.circle(surface, back_color, (30,30), 30, 0)
+		# draw a +/- signifier on top
+		pygame.draw.circle(surface, front_color, (30,15), 4, 0)
+		pygame.draw.circle(surface, front_color, (30,25), 4, 0)
+		pygame.draw.circle(surface, front_color, (30,35), 4, 0)
+		pygame.draw.circle(surface, front_color, (30,45), 4, 0)
+		if (positive):
+			# draw a positive signifier
+			pygame.draw.circle(surface, front_color, (21,20), 4, 0)
+			pygame.draw.circle(surface, front_color, (39,20), 4, 0)
+		else:
+			# idem, for negative
+			pygame.draw.circle(surface, front_color, (21,40), 4, 0)
+			pygame.draw.circle(surface, front_color, (39,40), 4, 0)
+		
+		return surface
 
 	def draw (self):
 		# draw two images side-by-side
@@ -1074,32 +1336,39 @@ class DualDisplay (ProgramBase):
 				a=self.im[0]['alpha'])
 		
 		# draw right image
-		self.gui.draw_image(self.im[1]['image'], pos=(1 - 0.5 * self.line_pos, 0.5),
+		self.gui.draw_image(self.im[1]['image'], pos=(1 - 0.5 * (1 - self.line_pos), 0.5),
 			size=(1,1),
 			mask=(self.line_pos, 1, 0,1),
 			a=1-self.im[1]['alpha'])
 		# draw new image if available
 		if (self.im[1]['alpha'] > 0):
-			self.gui.draw_image(self.im[1]['image_new'], pos=(1 - 0.5 * self.line_pos, 0.5),
+			self.gui.draw_image(self.im[1]['image_new'], pos=(1 - 0.5 * (1 - self.line_pos), 0.5),
 				size=(1,1),
 				mask=(self.line_pos, 1, 0,1),
 				a=self.im[1]['alpha'])
 		
 		# draw middle line
 		if (self.line_width > 0):
-			self.gui.draw_rectangle(o='center', x=self.line_pos, y=-1, w=self.line_width, h=480, c='foreground')
+			self.gui.draw_rectangle(x=self.line_pos, y=-1, w=self.line_width, h=480, c='foreground')
 
-		# draw picker
+		# draw pickers
 		if (self.picker_alpha != 0):
-			# draw picker background elements
-			if (self.picker_pos != self.line_pos):
-				# draw two dotted lines from picker to original spot
-				# draw 'resting' picker in original spot
-				self.gui.draw_rectangle(o='center', x=self.line_pos, y=-1, w=100, h=100, c='foreground',
-					a=self.picker_alpha * 0.5)
-			# draw picker on top
-			self.gui.draw_rectangle(o='center', x=self.picker_pos, y=-1, w=100, h=100, c='foreground',
+			# draw single line between pickers
+			width = abs(self.picker_plus_pos - self.picker_min_pos) * self.gui.display_size[0]
+			# only draw when it's necessary (line would be visible at all)
+			if (width > self.line_width + 60):
+				self.gui.draw_rectangle(x=self.line_pos, y=-1, w=width, h=2, c='foreground',
 					a=self.picker_alpha)
+
+			# draw pickers on top
+			if (abs(0.5 - self.line_pos) < 0.35):
+				# regular pickers
+				self.gui.draw_surface(self.picker_min_surf_n,  x=self.picker_min_pos,  y=0.5, a=self.picker_alpha)
+				self.gui.draw_surface(self.picker_plus_surf_n, x=self.picker_plus_pos, y=0.5, a=self.picker_alpha)
+			else:
+				# armed pickers
+				self.gui.draw_surface(self.picker_min_surf_a,  x=self.picker_min_pos,  y=0.5, a=self.picker_alpha)
+				self.gui.draw_surface(self.picker_plus_surf_a, x=self.picker_plus_pos, y=0.5, a=self.picker_alpha)
 
 
 class PhotoSoup (ProgramBase):
@@ -1148,3 +1417,8 @@ if __name__ == '__main__':
 		f = open('errors.log', 'a')
 		traceback.print_exc(file=f)  #sys.stdout
 		f.close()
+		# make a final attempt to close gracefully
+		core.close()
+	finally:
+		# if all else fails, quit pygame to get out of fullscreen
+		pygame.quit()
