@@ -42,6 +42,10 @@ else:
 #   use pygame.image.save(surface, filename)
 #   consider adding webserver along with this
 
+# make wifi connecting
+
+# ability to set display brightness (use dragging in Status display for brightness)
+
 # ----- CLASSES ---------------------------------------------------------------
 
 
@@ -479,7 +483,7 @@ class Image ():
 		self.rate      = rate   # default is 0, range is [-1, 1]
 		self.shown     = list(shown)  # list, each item denotes for how long image has been shown
 
-	def get (self, size, fit_to_square=False, smooth=True):
+	def get (self, size, fill_box=False, fit_to_square=False, circular=False, smooth=True):
 		# load if necessary
 		if (self.is_loaded is False):
 			self.load()
@@ -489,13 +493,24 @@ class Image ():
 			if (self.image['thumb'] is None):
 				self.image['thumb'] = self.scale((100,100), True, smooth)
 		elif (size[0] < self.size[0] or size[1] < self.size[1]):
+				# create unique identifier string for this size
 				size_string = str(size[0]) + 'x' + str(size[1])
+				if (fit_to_square):
+					size_string = size_string.replace('x','s')
+				elif (circular):
+					size_string = size_string.replace('x','c')
+
 				# check if this resizing is cached already
 				if (size_string in self.image):
 					return self.image[size_string]
 				else:
 					# scale and keep for future use
-					img = self.scale(size, fit_to_square, smooth)
+					img = None
+					if (circular):
+						img = self.scale(size, fill_box=True, fit_to_square=True, smooth=smooth)
+						img = self.make_circular(img)
+					else:
+						img = self.scale(size, fill_box, fit_to_square, smooth)
 					self.image[size_string] = img
 					return img
 		# without resize
@@ -526,10 +541,17 @@ class Image ():
 	""" Scales 'img' to fit into box bx/by.
 		This method will retain the original image's aspect ratio
 	    Based on: http://www.pygame.org/pcr/transform_scale/ """
-	def scale (self, box_size, fit_to_square=False, smooth=True):
+	def scale (self, box_size, fill_box=False, fit_to_square=False, smooth=True):
 		ix,iy = self.image['full'].get_size()
 		bx,by = box_size
+		fill_box = fill_box
+		# square images always fill out the box, so make sure it's square in shape
+		if (fit_to_square):
+			fill_box = True
+			bx = min(bx,by)
+			by = min(bx,by)
 
+		# determine scale factor
 		if ix > iy:
 			# fit to width
 			scale_factor = bx/float(ix)
@@ -549,8 +571,17 @@ class Image ():
 				sx = bx
 				sy = scale_factor * iy
 			else:
-				sy = by		
-		#print('scaling', box_size, '->', (sx, sy), self.file)
+				sy = by
+
+		if (fill_box):
+			if (bx == sx and by == sy):
+				pass  # s'all good man!
+			elif (bx/sx > by/sy):
+				sy = (bx / sx) * sy
+				sx = bx
+			else:
+				sx = (by / sy) * sx
+				sy = by
 
 		scaled_img = None
 
@@ -570,7 +601,29 @@ class Image ():
 				s_top    = (sy - sx) / 2
 			scaled_img = scaled_img.subsurface( Rect(s_left, s_top, s_width, s_height) )
 
+		#print((ix,iy), (bx,by), (sx,sy), scaled_img.get_size(), 'fill:'+str(fill_box), 'sq:'+str(fit_to_square))
+
 		return scaled_img
+
+	""" Returns a surface that is 'circular' (has a black background with image as circle in it) """
+	def make_circular (self, img):
+		size = img.get_size()
+
+		# make a surface that is equal in size
+		surface = pygame.Surface(size)
+		# fill it black
+		surface.fill([0,0,0])
+		# draw white circle on top and set white color to transparent
+		pygame.draw.circle(surface, [255,255,255], (int(size[0]/2), int(size[1]/2)), int(min(size)/2), 0)
+		surface.set_colorkey([255,255,255])
+		# draw the black 'vignette' on top of the image, white parts won't overwrite original
+		surface_rect = surface.get_rect()
+		surface_rect.topleft = (0,0)
+		img.blit(surface, surface_rect)
+		# set pure black as the transparent color
+		img.set_colorkey([0,0,0])
+
+		return img
 
 	""" Up or downvotes an image """
 	def do_rate (self, positive=True, delta=0.2):
@@ -938,11 +991,13 @@ class GUI ():
 		self.dirty = True
 		self.dirty_areas.append(text_rect)
 
-	def draw_image (self, img=None, o='center', pos=(0.5,0.5), size=(1,1), mask=None, a=1, sq=False):
+	def draw_image (self, img=None, o='center', pos=(0.5,0.5), size=(1,1), mask=None, a=1, rs=True, fill=False, sq=False, ci=False):
 		# decide on place and size
-		img_size = (size[0] * self.display_size[0], size[1] * self.display_size[1])
+		img_size = size
+		if (rs):  # size is relative to screen
+			img_size = (size[0] * self.display_size[0], size[1] * self.display_size[1])
 		# get image (resized)
-		img_scaled = img.get(img_size, sq)
+		img_scaled = img.get(img_size, fill_box=fill, fit_to_square=sq, circular=ci)
 
 		# determine position
 		xpos = int(pos[0] * self.display_size[0])
@@ -1390,7 +1445,7 @@ class PhotoSoup (ProgramBase):
 			super().update(full=True)
 
 	def draw (self):
-		self.gui.draw_image(self.image, pos=(0.5, 0.5), size=(1, 1), sq=False)
+		self.gui.draw_image(self.image, pos=(0.5, 0.5), size=(400, 400), rs=False, ci=True)
 
 
 # ----- MAIN ------------------------------------------------------------------
