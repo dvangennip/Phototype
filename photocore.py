@@ -29,14 +29,9 @@ else:
 
 # make code to switch modes without user intervention
 
-# get finger position code working, implement dragging
-
 # DualDisplay: don't swap over if dragging/user interaction is active -> check again
 
-# make the squared get image function work properly (returns too small now)
-
-# check if possible to generate circular images
-# (perhaps via drawing of white circle on black, with black set to transparent)
+# PhotoSoup: map out functionality and interactivity
 
 # make an image reduction script that takes in new images and preps those
 #   use pygame.image.save(surface, filename)
@@ -662,20 +657,21 @@ class Image ():
 		return self.file + '; rate: ' + str(self.rate) + '; shown: ' + str(self.shown)
 
 
-class Vector3 ():
-	def __init__ (self, x, y, z):
-		self.set(x,y,z)
+class Vector4 ():
+	def __init__ (self, x=0, y=0, z=0, w=0):
+		self.set(x,y,z,w)
 
-	def set (self, x, y, z):
+	def set (self, x=0, y=0, z=0, w=0):
 		self.x = x
 		self.y = y
 		self.z = z
+		self.w = w
 
 	def copy (self):
-		return Vector3(self.x, self.y, self.z)
+		return Vector4(self.x, self.y, self.z, self.w)
 
 	def __str__ (self):
-		return '(x: {0.x}, y: {0.y}, z: {0.z})'.format(self)
+		return '(x: {0.x}, y: {0.y}, z: {0.z}, w: {0.w})'.format(self)
 
 
 class InputHandler ():
@@ -690,7 +686,7 @@ class InputHandler ():
 		self.RELEASED_HOLD = 5
 		self.RELEASED_DRAG = 6
 
-		self.pos        = Vector3(0,0,0)  # x, y, timestamp
+		self.pos        = Vector4(0,0,0)  # x, y, timestamp
 		self.state      = self.REST
 		self.drag       = []  # list of positions, empty if no drag active
 		self.last_touch = 0
@@ -1440,22 +1436,94 @@ class PhotoSoup (ProgramBase):
 	def __init__ (self, core=None):
 		super().__init__(core)
 
-		self.image = None
+		self.base_size = 0.2
+
+		self.images = []
+		for n in range(0,9):
+			self.images.append({
+				'image': None,
+				'since': 0,
+				'v'    : Vector4(0, 0, 0, 0),
+				'size' : self.base_size
+			})
 
 	def update (self):
-		dirty = False
 		now = time.time()
 
-		if (self.image is None or now > self.last_update + 5):
-			self.image = self.core.images.get_next()
-			dirty = True
+		first=True
+		print('update')
+
+		for i in self.images:
+			if (i['image'] is None or i['v'].x < -50 or i['v'].x > 850 or i['v'].y < -50 or i['v'].y > 530):
+				i['image'] = self.core.images.get_next()
+				i['since'] = now
+				i['v'].set(
+					0.5 * self.core.gui.display_size[0],
+					0.5 * self.core.gui.display_size[1],
+					2 * pi * random.random(),
+					10 * random.random())
+			else:
+				# i['v'].x += -0.001 * cos(i['v'].z)
+				# i['v'].y += -0.001 * sin(i['v'].z)
+
+				""" --------
+				there is the default force with (polar) direction i['v'].w and magnitude i['v'].w
+				each other image has influence, through attraction Fa and repulsion Fr
+				those two forces are from x,y towards the other x,y with radian angle ß and -ß
+				so the sum of the two forces influence the default force """
+
+				# calculate the base vector for this image (with magnitude w, angle z)
+				vi_x = i['v'].w * cos(i['v'].z)
+				vi_y = i['v'].w * sin(i['v'].z)
+				#print('1', vi_x, vi_y)
+
+				for img in self.images:
+					# calculate influence
+					f = self.get_force_attraction(i, img) - self.get_force_repulsion(i, img)
+					a = self.get_angle(i, img)
+
+					# add this vector to the base
+					vi_x += f * cos(a)
+					vi_y += f * sin(a)
+					#print('2', vi_x, vi_y, f, a)
+
+				# add the resultant vector to get the new position
+				#print('3', vi_x, vi_y)
+				i['v'].x += vi_x
+				i['v'].y += vi_y
+
+			if first:
+				print(i['v'].x, i['v'].y)
+				first=False
+
+		self.dirty = True
 
 		# indicate update is necessary, if so, always do full to avoid glitches
-		if (dirty):
+		if (self.dirty):
 			super().update(full=True)
 
+	def get_angle (self, a, b):
+		dx = b['v'].x - a['v'].x
+		dy = a['v'].y - b['v'].y
+		return atan2(dy, dx)
+
+	def get_distance (self, a, b):
+		return sqrt(pow(b['v'].x - a['v'].x,2) + pow(a['v'].y - b['v'].y ,2))
+
+	def get_force_attraction (self, a, b):
+		# TODO increase/reduce attraction based on image rating
+		return 0.1 * self.get_distance(a, b)
+
+	def get_force_repulsion (self, a, b):
+		# TODO add check for overlapping, to increase repulsion in that case
+		distance = max(self.get_distance(a, b), 0.01)  # avoid divide by zero problems
+		return 0.002 / pow(distance, 2)
+
 	def draw (self):
-		self.gui.draw_image(self.image, pos=(0.5, 0.5), size=(400, 400), rs=False, ci=True)
+		for i in self.images:
+			xpos = i['v'].x / self.core.gui.display_size[0]
+			ypos = i['v'].y / self.core.gui.display_size[1]
+			self.gui.draw_image(i['image'], pos=(xpos, ypos), size=(i['size'], i['size']), rs=False, ci=True)
 
 
 # ----- MAIN ------------------------------------------------------------------
@@ -1463,6 +1531,9 @@ class PhotoSoup (ProgramBase):
 
 """ Unless this script is imported, do the following """
 if __name__ == '__main__':
+	# define here so it's available later, also in case of exception handling
+	core = None
+
 	try:
 		# initialise all components
 		core = Photocore()
@@ -1483,7 +1554,8 @@ if __name__ == '__main__':
 		traceback.print_exc(file=f)  #sys.stdout
 		f.close()
 		# make a final attempt to close gracefully
-		core.close()
+		if (core is not None):
+			core.close()
 	finally:
 		# if all else fails, quit pygame to get out of fullscreen
 		pygame.quit()
