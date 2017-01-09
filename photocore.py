@@ -2,7 +2,7 @@
 
 # ----- IMPORT LIBRARIES ------------------------------------------------------
 
-from math import sqrt
+from math import sqrt, pi, cos, sin, atan2
 import os
 import pickle
 import psutil
@@ -60,7 +60,7 @@ class Photocore ():
 		self.network  = NetworkManager()
 		self.display  = DisplayManager()
 		self.distance = DistanceSensor()
-		self.images   = ImageManager('../DCIM', core=self)
+		self.images   = ImageManager('../images', core=self)
 		self.gui      = GUI(core=self)
 		self.input    = InputHandler(core=self)
 		
@@ -495,14 +495,16 @@ class Image ():
 		elif (size[0] < self.size[0] or size[1] < self.size[1]):
 				# create unique identifier string for this size
 				size_string = str(size[0]) + 'x' + str(size[1])
-				if (fit_to_square):
-					size_string = size_string.replace('x','s')
-				elif (circular):
+				if (circular):
 					size_string = size_string.replace('x','c')
+				elif (fit_to_square):
+					size_string = size_string.replace('x','s')
+				elif (fill_box):
+					size_string = size_string.replace('x','f')
 
 				# check if this resizing is cached already
 				if (size_string in self.image):
-					return self.image[size_string]
+					return self.image[size_string], size_string
 				else:
 					# scale and keep for future use
 					img = None
@@ -512,9 +514,9 @@ class Image ():
 					else:
 						img = self.scale(size, fill_box, fit_to_square, smooth)
 					self.image[size_string] = img
-					return img
+					return img, size_string
 		# without resize
-		return self.image['full']
+		return self.image['full'], size_string
 
 	def load (self):
 		# load image
@@ -537,6 +539,14 @@ class Image ():
 		# finally, delete sizes (separate loop avoids dict size changes during iteration)
 		for sd in sizes_to_delete:
 			del self.image[sd]
+
+	""" Save a version of this image to path. Size_string is assumed to exist, returns False otherwise. """
+	def save_to_file (self, size_string, output_path):
+		if (size_string in self.image):
+			pygame.image.save(self.image[size_string], output_path)
+			return True
+		else:
+			return False
 
 	""" Scales 'img' to fit into box bx/by.
 		This method will retain the original image's aspect ratio
@@ -996,8 +1006,8 @@ class GUI ():
 		img_size = size
 		if (rs):  # size is relative to screen
 			img_size = (size[0] * self.display_size[0], size[1] * self.display_size[1])
-		# get image (resized)
-		img_scaled = img.get(img_size, fill_box=fill, fit_to_square=sq, circular=ci)
+		# get image (returns resized, size_string)
+		img_scaled = img.get(img_size, fill_box=fill, fit_to_square=sq, circular=ci)[0]
 
 		# determine position
 		xpos = int(pos[0] * self.display_size[0])
