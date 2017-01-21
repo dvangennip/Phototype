@@ -16,6 +16,7 @@ import serial
 import sys
 import time
 import traceback
+from simpleserver import SimpleServer
 
 if (sys.platform == 'darwin'):
 	from mocking import Touchscreen, TS_PRESS, TS_RELEASE, TS_MOVE
@@ -590,7 +591,6 @@ class ImageManager ():
 class Image ():
 	def __init__ (self, file=None, shown=[], rate=0):
 		self.file      = file
-		self.image     = {
 		self.image     = {'full': None}  # only load when necessary
 		self.size      = (0,0)           # in pixels x,y
 		self.is_loaded = False

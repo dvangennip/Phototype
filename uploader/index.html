@@ -1,0 +1,28 @@
+<!DOCTYPE html> 
+<html>
+<head>
+	<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+	<title>Phototype - Uploading images</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<link rel="stylesheet" media="all" href="style.css" type="text/css">
+	<link rel="stylesheet" media="all" href="dropzone.css" type="text/css">
+	<script type="text/javascript" src="dropzone.js"></script>
+	<script type="text/javascript" src="uploader.js"></script>
+</head>
+
+<body>
+	<div id="drop_notification" class="drop-notification"></div>
+	<div class="flex-container">
+		<section id="info_area" class="info-area">
+			<div>
+				<h2><strong>Phototype image uploader</strong></h2>
+				<ol>
+					<li>Drag and drop image files onto this browser window.</li>
+					<li>Those files will now upload to the device.</li>
+					<li>Soon, these images will start appearing on the device.</li>
+				</ol>
+				<form action="/upload" class="dropzone" id="image_dropzone"></form>
+			</div>
+		</section>
+	</div>
+</body>
