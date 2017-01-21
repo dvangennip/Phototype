@@ -19,7 +19,8 @@ import traceback
 from simpleserver import SimpleServer
 
 if (sys.platform == 'darwin'):
-	from mocking import Touchscreen, TS_PRESS, TS_RELEASE, TS_MOVE
+	# simulate touches by masquerading pointer movements and clicks
+	from mocking import Touchscreen, Touch, TS_PRESS, TS_RELEASE, TS_MOVE
 else:
 	from ft5406 import Touchscreen, TS_PRESS, TS_RELEASE, TS_MOVE
 	# set display explicitly to allow starting this script via SSH with output on Pi display
@@ -51,8 +52,11 @@ else:
 class Photocore ():
 	def __init__ (self):
 		# init variables
-		self.do_exit  = False
-		self.is_debug = True
+		self.do_exit      = False
+		self.is_debug     = True
+		self.last_update  = 0
+		self.memory_usage = 0
+		self.memory_total = round(psutil.virtual_memory().total / (1024*1024))
 
 		# initiate all subclasses
 		self.data     = DataManager(core=self)
@@ -67,6 +71,7 @@ class Photocore ():
 		self.programs                = []
 		self.program_active_index    = 1
 		self.program_preferred_index = 1
+		self.max_time_for_program    = time.time() + 30
 		self.programs.append( BlankScreen(  core=self) )
 		self.programs.append( StatusProgram(core=self) )
 		self.programs.append( DualDisplay(  core=self) )
@@ -80,7 +85,19 @@ class Photocore ():
 			self.set_active(self.program_active_index)
 
 	def update (self):
+		now = time.time()
+
 		# update self
+		if (self.last_update < now - 1):
+			# track memory usage
+			mem_available = round(psutil.virtual_memory().available / (1024*1024))
+			self.memory_usage = round(100 * (1 - (mem_available / self.memory_total) ))
+
+			# deal with potential memory leak of images not unloading after use
+			if (mem_available < 600):
+				self.images.check_use()
+
+			self.last_update = now
 		
 		# update all subclasses
 		self.data.update()
@@ -91,8 +108,24 @@ class Photocore ():
 		self.images.update()
 
 		# decide on active program
+		if (now > self.max_time_for_program):
+			# first check if state has not been interactive for past minute (if so, don't switch)
+			if (self.input.get_last_touch() < now - 60):
+				# if time is up pick another program (but avoid blank or status programs)
+				# and make sure the new pick isn't similar to the current program
+				while True:
+					self.program_preferred_index = random.randint(2, len(self.programs))
+					if (self.program_preferred_index != self.program_active_index):
+						break
+
+		# switch over if necessary
 		if (self.program_preferred_index != self.program_active_index):
 			self.set_active(self.program_preferred_index)
+
+			# decide on the time the next program will be active
+			# uses the program's max time as a basis, with some added randomness [0.75, 1.25]
+			random_time = ((random.random() / 2) + 0.75) * self.get_active().get_max_time()
+			self.max_time_for_program   = now + random_time
 
 		# update active program
 		self.programs[self.program_active_index].update()
@@ -124,7 +157,11 @@ class Photocore ():
 
 		# only switch when index has changed
 		if (new_index != self.program_active_index):
+			# cleanup
 			self.get_active().make_inactive()
+			self.images.check_use(0)
+
+			# switch
 			self.program_active_index    = new_index
 			self.program_preferred_index = new_index
 			self.get_active().make_active()
@@ -132,11 +169,22 @@ class Photocore ():
 	def set_preferred (self, index=0):
 		self.program_preferred_index = index
 
+	def set_next_program (self):
+		# set preferred to next, or back to zero if at limits
+		self.program_preferred_index += 1
+		if (self.program_preferred_index >= len(self.programs)):
+			self.program_preferred_index = 0
+
+		self.set_active(self.program_preferred_index)
+
 	def get_images_count (self):
 		return self.images.get_count()
 
 	def set_exit (self, state=True):
 		self.do_exit = state
+
+	def get_memory_usage (self):
+		return self.memory_usage
 
 	def get_distance (self):
 		return self.distance.get()
@@ -842,6 +890,11 @@ class InputHandler ():
 			touch.on_release = self.touch_handler
 			touch.on_move    = self.touch_handler
 
+		if (sys.platform == 'darwin'):
+			self.mock_pos     = (0, 0)
+			self.mock_pressed = False
+			self.mock_event   = TS_RELEASE
+
 		# run polling in another thread that calls touch_handler whenever an event comes in
 		self.ts.run()
 
@@ -859,11 +912,11 @@ class InputHandler ():
 		# handle pygame event queue
 		events = pygame.event.get()
 
-		# for a mock run, send events also to touchscreen module
+		# for a mock run, send events also to touch handler
 		# (as pygame events cannot be taken from its queue twice)
 		if (sys.platform == 'darwin'):
-			pass #self.ts.add_events(events)
-
+			self.mock_touch_generator()
+			
 		# handle pygame events
 		for event in events:
 			if (event.type is QUIT):
@@ -877,8 +930,47 @@ class InputHandler ():
 	def close (self):
 		self.ts.stop()
 
+	def get_last_touch (self):
+		return self.last_touch
+
+	""" Uses pygame mouse events to feed touch input """
+	def mock_touch_generator (self):
+		send_event = False
+
+		# do we have focus? if not, let it all go
+		if (pygame.mouse.get_focused()):  # True if window has focus
+			# is there change?
+			pos     = pygame.mouse.get_pos()  # (x, y)
+			pressed = pygame.mouse.get_pressed()[0]  # button1
+			
+			# without change, skip
+			if (pos != self.mock_pos or pressed != self.mock_pressed):
+				# handle this event
+				self.mock_pos     = pos
+				self.mock_pressed = pressed
+				
+				if (pressed):
+					if (self.mock_event == TS_RELEASE):
+						self.mock_event = TS_PRESS
+					elif (self.mock_event >= TS_PRESS):
+						self.mock_event = TS_MOVE
+					send_event = True
+				elif (self.mock_event >= TS_PRESS):
+					self.mock_event = TS_RELEASE
+					send_event = True
+		else:
+			# without focus, release any ongoing touch (if active)
+			if (self.mock_event >= TS_PRESS):
+				self.mock_event = TS_RELEASE
+				send_event = True
+
+		if (send_event):
+			#print(send_event, ['RELEASE','PRESS','MOVE'][self.mock_event], self.mock_pos, self.mock_pressed)
+			mock_touch = Touch(0, self.mock_pos[0], self.mock_pos[1])  # slot, x, y
+			self.touch_handler(self.mock_event, mock_touch)
+
 	def touch_handler(self, event, touch):
-		# touch.slot, touch.id (uniquem or -1 after release), touch.valid, touch.x, touch.y
+		# data in touch: touch.slot, touch.id (uniquem or -1 after release), touch.valid, touch.x, touch.y
 		self.last_touch = self.t()
 		
 		# to simplify matters, limit scope to slot 0 (that is, the first finger to touch screen)
@@ -909,7 +1001,7 @@ class InputHandler ():
 					time     = self.drag[len(self.drag)-1].z - self.drag[0].z
 
 				# interpret the info
-				if (distance > 50):
+				if (distance > 30):
 					# this was a drag, now released
 					self.state = self.RELEASED_DRAG
 				else:
@@ -919,6 +1011,9 @@ class InputHandler ():
 					else:
 						# this was a tap and hold
 						self.state = self.RELEASED_HOLD
+		elif (touch.slot == 9 and event == TS_RELEASE):
+				# a ten finger press will go to the next program
+				self.core.set_next_program()
 
 
 class GUI ():
@@ -1189,6 +1284,7 @@ class ProgramBase ():
 		self.last_update = 0  # seconds since epoch
 		self.dirty       = True
 		self.first_run   = True
+		self.max_time    = 300  # in seconds
 
 	""" code to run every turn, needs to signal whether a gui update is needed """
 	def update (self, dirty=True, full=False):
@@ -1224,6 +1320,9 @@ class ProgramBase ():
 
 	def draw (self):
 		pass
+
+	def get_max_time (self):
+		return self.max_time
 
 
 class BlankScreen (ProgramBase):
@@ -1279,6 +1378,7 @@ class DualDisplay (ProgramBase):
 		
 		self.default_time    = 10
 		self.switch_time     = 2
+		self.max_time        = 3.5 * 3600  # n hours
 
 		self.im = [
 			{  # one

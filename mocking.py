@@ -24,8 +24,8 @@ ABS_MT_POSITION_X = 0x35 # 53 Center X of multi touch position
 ABS_MT_POSITION_Y = 0x36 # 54 Center Y of multi touch position
 ABS_MT_TRACKING_ID = 0x39 # 57 Unique ID of initiated contact
 
-TS_PRESS   = 1
 TS_RELEASE = 0
+TS_PRESS   = 1
 TS_MOVE    = 2
 
 

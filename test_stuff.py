@@ -47,3 +47,8 @@ print (si)
 
 # ------
 
+def power (a,b):
+	return a**b, b**a
+
+c, d = power(2,3)
+print(c,d)
