@@ -2,12 +2,15 @@
 
 # ----- IMPORT LIBRARIES ------------------------------------------------------
 
+from hashlib import md5
 from math import sqrt, pi, cos, sin, atan2
+from multiprocessing import Process, Queue
 import os
 import pickle
 import psutil
 import pygame
 from pygame.locals import *
+from queue import Empty as QueueEmpty
 import random
 import serial
 import sys
@@ -55,7 +58,7 @@ class Photocore ():
 		self.network  = NetworkManager()
 		self.display  = DisplayManager()
 		self.distance = DistanceSensor()
-		self.images   = ImageManager('../images', core=self)
+		self.images   = ImageManager('../images', '../uploads', core=self)
 		self.gui      = GUI(core=self)
 		self.input    = InputHandler(core=self)
 		
@@ -383,21 +386,64 @@ class DistanceSensor ():
 
 
 class ImageManager ():
-	def __init__ (self, input_folder='', core=None):
-		self.core         = core
-		self.images       = []
-		self.recent       = []
-		self.input_folder = input_folder
-		self.load_list(self.input_folder)
+	def __init__ (self, image_folder='', upload_folder='', core=None):
+		self.core          = core
+		self.images        = []
+		self.recent        = []
+		self.image_folder  = image_folder
+		self.upload_folder = upload_folder
+
+		# for importer process
+		self.do_delete     = True
+		self.last_update   = 0
+
+		# start the importer process in another thread
+		self.scanner_queue = Queue()
+		self.process_queue = Queue()
+		self.process       = Process(target=self.run_importer)
+		self.process.start()
+
+		# also manage a simple webserver interface for image uploads
+		self.upload_server = SimpleServer(debug=True, port=80, use_signals=False, regular_run=False)
+
+		# load images
+		self.scan_folder(self.image_folder, 'append')
 
 	def update (self):
-		pass
+		# check if scanner is triggered by importer process
+		try:
+			# get without blocking (as that wouldn't go anywhere)
+			# raises Empty if no items in queue
+			item = self.scanner_queue.get(block=False)
+			if (item is not None):
+				self.scan_folder(self.image_folder, 'append')
+		except QueueEmpty:
+			pass
 
 	def close (self):
+		self.check_use(0) # unload all images unused since now
 		self.images = []  # reset to severe memory links
 
-	def load_list (self, input_folder=None):
-		for dirname, dirnames, filenames in os.walk(input_folder):
+		# signal upload server to shutdown
+		self.upload_server.shutdown()
+
+		# signal to process it should close
+		self.process_queue.put(True)
+		# wait until it does so
+		print('Signalled and waiting for importer to close...')
+		self.process.join()
+
+	""" Checks recent use of images, requests to unload those unused """
+	def check_use (self, seconds_ago=5):
+		recent = time.time() - seconds_ago  # n seconds ago
+		for image in self.images:
+			if (not image.check_use_since(recent)):
+				image.unload()
+
+	def scan_folder (self, folder=None, call='append'):
+		num_of_files_found = 0
+
+		for dirname, dirnames, filenames in os.walk(folder):
 			# editing 'dirnames' list will stop os.walk() from recursing into there
 			if '.git' in dirnames:
 				dirnames.remove('.git')
@@ -407,10 +453,17 @@ class ImageManager ():
 			# check all filenames, act on valid ones
 			for filename in filenames:
 				if filename.endswith(('.jpg', '.jpeg')):
-					file_path = os.path.join(dirname, filename)
-					self.append(file_path)
+					if (call == 'append'):
+						self.append(dirname, filename)
+					elif (call == 'check_and_resize'):
+						self.check_and_resize(dirname, filename)
 
-	def append (self, file_path):
+					num_of_files_found += 1
+
+		return num_of_files_found
+
+	def append (self, dirname, filename):
+		file_path = os.path.join(dirname, filename)
 		# check if file_path is already in list
 		duplicate = False
 
@@ -448,7 +501,7 @@ class ImageManager ():
 				# (so higher rating => higher chance of acceptance)
 				if (rated):
 					# do via a random check; default .5 chance yes/no, with changed odds based on rating
-					r = random.random() + (img.rate / 4)
+					r = random.random() + (img.rate / 3)
 					if (r < 0.5):
 						acceptable = False  # we'll stay in the loop and try again
 		
@@ -460,34 +513,101 @@ class ImageManager ():
 
 		return img
 
-
 	def get_count (self):
 		return len(self.images)
+
+	""" This is the code that the importer background process will run """
+	def run_importer (self):
+		# run this while loop forever, unless a signal tells otherwise
+		while (True):
+			try:
+				# first, check if this process received a request to stop
+				try:
+					# get without blocking (as that wouldn't go anywhere)
+					# raises Empty if no items in queue
+					item = self.process_queue.get(block=False)
+					if (item is not None):
+						break
+				except QueueEmpty:
+					pass
+
+				# check for new images
+				if (time.time() > self.last_update + 10):
+					new_images = self.scan_folder(self.upload_folder, 'check_and_resize')
+					
+					# indicate we have new images to scan
+					if (new_images > 0):
+						self.scanner_queue.put(True)
+
+					self.last_update = time.time()
+
+				time.sleep(5)
+			# ignore any key input (handled by main thread)
+			except KeyboardInterrupt:
+				pass
+
+		# finally, after exiting while loop, it ends here
+		#print('Terminating importer process')
+
+	""" Takes in an image filepath, checks if a resize is possible, then deletes original """
+	def check_and_resize (self, dirname, filename):
+		# decide on in/output path
+		in_file_path        = os.path.join(dirname, filename)
+		in_file_size        = os.stat(in_file_path).st_size
+		marked_for_deletion = False
+
+		# consider a unique filename based on original filename and filesize (to avoid same names across folders mixups)
+		# use only the first 12 characters to keep it sane / legible
+		out_filename = md5(filename.encode('utf-8') + str(in_file_size).encode('utf-8')).hexdigest()[:12] + '.jpg'
+		out_file_path = os.path.join(self.image_folder, out_filename)
+
+		# check if resized image already exists, otherwise take action
+		if (os.path.exists(out_file_path) is True):
+			marked_for_deletion = True
+		else:
+			# use photocore's Image class for resizing and saving
+			p = Image(in_file_path)
+			surface, size_string = p.get((800,480), fill_box=True)
+			print('Resizing: ', in_file_path, surface.get_size())
+			result = p.save_to_file(size_string, out_file_path)
+
+			if (result is False):
+				print('Warning, could not save: ', in_file_path)
+			else:
+				# the original may now be deleted
+				marked_for_deletion = True
+
+		if (self.do_delete and marked_for_deletion):
+			# consider removing the original file
+			try:
+				print('Deleting:', in_file_path)
+				os.remove(in_file_path)
+				pass
+			except OSError as ose:
+				print(ose)
 
 
 class Image ():
 	def __init__ (self, file=None, shown=[], rate=0):
 		self.file      = file
 		self.image     = {
-			'full' : None,  # only load when necessary
-			'thumb': None   # idem
-		}
-		self.size      = (0,0)  # pixels x,y
+		self.image     = {'full': None}  # only load when necessary
+		self.size      = (0,0)           # in pixels x,y
 		self.is_loaded = False
+		self.last_use  = 0
 
 		self.rate      = rate   # default is 0, range is [-1, 1]
 		self.shown     = list(shown)  # list, each item denotes for how long image has been shown
 
 	def get (self, size, fill_box=False, fit_to_square=False, circular=False, smooth=True):
+		self.last_use = time.time()
+
 		# load if necessary
 		if (self.is_loaded is False):
 			self.load()
 
 		# check the required size and make it available
-		if (size == 'thumb'):
-			if (self.image['thumb'] is None):
-				self.image['thumb'] = self.scale((100,100), True, smooth)
-		elif (size[0] < self.size[0] or size[1] < self.size[1]):
+		if (size[0] < self.size[0] or size[1] < self.size[1]):
 				# create unique identifier string for this size
 				size_string = str(size[0]) + 'x' + str(size[1])
 				if (circular):
@@ -527,7 +647,7 @@ class Image ():
 		# or delete if non-default
 		sizes_to_delete = []
 		for s in self.image:
-			if (s == 'full' or s == 'thumb'):
+			if (s == 'full'):
 				self.image[s] = None
 			else:
 				sizes_to_delete.append(s)
@@ -535,13 +655,22 @@ class Image ():
 		for sd in sizes_to_delete:
 			del self.image[sd]
 
+	""" Checks if image has been requested since threshold_time, False if not """
+	def check_use_since (self, threshold_time):
+		if (self.last_use < threshold_time):
+			return True
+		return False
+
 	""" Save a version of this image to path. Size_string is assumed to exist, returns False otherwise. """
 	def save_to_file (self, size_string, output_path):
 		if (size_string in self.image):
-			pygame.image.save(self.image[size_string], output_path)
-			return True
-		else:
-			return False
+			try:
+				pygame.image.save(self.image[size_string], output_path)
+				return True
+			except Exception as e:
+				print(e)
+		# return here if saving fails
+		return False
 
 	""" Scales 'img' to fit into box bx/by.
 		This method will retain the original image's aspect ratio
@@ -638,6 +767,7 @@ class Image ():
 			self.rate -= delta
 		# limit to [0,1] range
 		self.rate = max(min(self.rate, 1), -1)
+		#print('rate', self.file, self.rate, positive)
 
 		return self.rate
 

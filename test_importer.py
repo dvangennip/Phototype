@@ -3,6 +3,8 @@
 # ----- IMPORT LIBRARIES ------------------------------------------------------
 
 from hashlib import md5
+from multiprocessing import Process, Queue
+from queue import Empty as QueueEmpty
 import os
 from photocore import Image
 import pygame
@@ -11,17 +13,50 @@ import time
 
 # ----- CLASSES ---------------------------------------------------------------
 
+
 class PhotoImporter ():
 	def __init__ (self, input_folder='../uploads', output_folder='../images', do_delete=True):
 		self.input_folder  = input_folder
 		self.output_folder = output_folder
 		self.do_delete     = do_delete
+		self.last_update   = 0
+
+		self.queue   = Queue()
+		self.process = Process(target=self.update)
+		self.process.start()
 
 	def update (self):
-		self.load_list()
+		# run this while loop forever, unless a signal tells otherwise
+		while (True):
+			try:
+				try:
+					# get without blocking (as that wouldn't go anywhere)
+					item = self.queue.get(block=False)
+					if (item is not None):
+						break
+				except QueueEmpty:
+					pass
+
+				if (time.time() > self.last_update + 10):
+					print('Checking for new images...')
+					self.load_list()
+					self.last_update = time.time()
+					print('Waiting...')
+
+				time.sleep(5)
+			# ignore any key input (handled by main thread)
+			except KeyboardInterrupt:
+				pass
+
+		# finally, after exiting while loop, it ends here
+		print('Terminating process')
 
 	def close (self):
-		pass
+		# signal it should close
+		self.queue.put(True)
+		# wait until it does so
+		print('Signalled and waiting for importer to close...')
+		self.process.join()
 
 	def load_list (self):
 		for dirname, dirnames, filenames in os.walk(self.input_folder):
@@ -76,18 +111,26 @@ class PhotoImporter ():
 
 """ Unless this script is imported, do the following """
 if __name__ == '__main__':
+	print('PhotoImporter starts')
 	importer = None
+	do_exit  = False
+	t = 0
 
 	# initialise all components
 	importer = PhotoImporter()
 
 	# program stays in this loop unless called for exit
-	while (True):
-		print('Checking for new images...')
-		importer.update()
-		
-		# pause n seconds after each update
-		time.sleep(120)
+	while (not do_exit):
+		try:
+			# pause for a moment after each update
+			time.sleep(1)
+			
+			t += 1
+			if (t > 55):
+				do_exit = True
+		except KeyboardInterrupt:
+			do_exit = True
 
 	# finally
 	importer.close()
+	print('PhotoImporter closes')
