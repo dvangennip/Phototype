@@ -27,25 +27,16 @@ else:
 	# not necessary otherwise. requires running with sudo on the remote terminal.
 	os.environ['SDL_VIDEODRIVER'] = 'fbcon'
 
-#from subprocess import Popen
-
-
-# ----- GLOBAL VARIABLES ---------------------------------------------
-
-# make code to switch modes without user intervention
-
-# DualDisplay: don't swap over if dragging/user interaction is active -> check again
-
+# ----- TODO ------------------------------------------------------------------
+"""
 # PhotoSoup: map out functionality and interactivity
 
-# make an image reduction script that takes in new images and preps those
-#   use pygame.image.save(surface, filename)
-#   consider adding webserver along with this
+# enable serial connection and fetch distance data
 
 # make wifi connecting
 
-# ability to set display brightness (use dragging in Status display for brightness)
-
+# check data export and logging abilities
+"""
 # ----- CLASSES ---------------------------------------------------------------
 
 
@@ -192,8 +183,8 @@ class Photocore ():
 	def get_display_brightness (self):
 		return self.display.get_brightness()
 
-	def set_display_brightness (self, brightness=100, on=True):
-		pass
+	def set_display_brightness (self, brightness=100):
+		self.display.set_brightness(brightness)
 
 	def get_time (self):
 		return time.strftime("%H:%M:%S  %d %B %Y", time.localtime())
@@ -211,8 +202,14 @@ class Photocore ():
 		else:
 			# update CPU temperature -----
 			#   call returns CPU temperature as a character string (> temp=42.8'C)
-			temp = os.popen('vcgencmd measure_temp').readline()
-			return float(temp.replace("temp=","").replace("'C\n",""))
+			try:
+				temp = os.popen('vcgencmd measure_temp').readline()
+				return float(temp.replace("temp=","").replace("'C\n",""))
+			except Exception:
+				# most likely a memory allocation issue if low on memory
+				# it's not critical to the functioning though, so warn and continue
+				print('Warning: temperature cannot be read')
+				return 0
 
 	def get_network_state (self):
 		return self.network.get_state_summary()
@@ -350,8 +347,9 @@ class NetworkManager ():
 
 class DisplayManager ():
 	def __init__ (self):
-		self.brightness = 100
+		self.brightness = 255
 		self.is_on      = True
+		self.path       = "/sys/class/backlight/rpi_backlight/"
 
 	def update (self):
 		pass
@@ -360,22 +358,48 @@ class DisplayManager ():
 		pass
 
 	def is_on (self):
+		self.is_on = not self._get_value("bl_power")
 		return self.is_on
 
+	def set_on (self, on=True):
+		self._set_value("bl_power", int(not on))
+
+	""" Returns brightness on a scale of [0,100] """
 	def get_brightness (self):
 		if (self.is_on is False):
 			return 0
 		else:
-			return self.brightness
+			self.brightness = int(self._get_value("actual_brightness"))
+			return round(self.brightness / 2.55)
 
+	""" Input is in range [0,100] """
 	def set_brightness (self, brightness):
-		self.brightness = brightness
-		if (self.brightness == 0):
-			self.is_on = False
-		else:
-			self.is_on = True
+		self.brightness = round(max(min(2.55 * brightness, 255), 0))
+		self.is_on = (self.brightness > 0)
 
 		# set state accordingly
+		self._set_value("brightness", self.brightness)
+
+	# ----- functions below via: https://github.com/linusg/rpi-backlight/ --------
+
+	def _get_value (self, name):
+		if (sys.platform == 'darwin'):
+			return 0
+		else:
+			try:
+				with open(os.path.join(self.path, name), "r") as f:
+					return f.read()
+			except PermissionError:
+				print('Error: No permission to read backlight values')
+
+	def _set_value (self, name, value):
+		if (sys.platform != 'darwin'):
+			try:
+				with open(os.path.join(self.path, name), "w") as f:
+					f.write(str(value))
+			except PermissionError:
+				print('Error: No permission to set backlight values')
+		
 
 class DistanceSensor ():
 	def __init__ (self):
@@ -384,35 +408,28 @@ class DistanceSensor ():
 		
 		# setup serial connection
 		self.use_serial = False
-		self.connection = None
+
+		# start the serial connection process in another thread
 		if (self.use_serial):
-			try:
-				self.connection          = serial.Serial()
-				self.connection.port     = '/dev/tty'
-				self.connection.baudrate = 9600
-				self.connection.timeout  = 1
-				if (sys.platform != 'darwin'):
-					self.connection.open()
-				print('Serial: on ' + self.connection.name)  # check actual port used
-			except:
-				print('Serial: no serial connection')
+			self.sensor_queue  = Queue()
+			self.process_queue = Queue()
+			self.process       = Process(target=self.run_serial)
+			self.process.start()
 
 	""" Read distance sensor data over serial connection """
 	def update (self):
 		if (self.use_serial):
-			# if incoming bytes are waiting to be read from the serial input buffer
-			if (self.connection.is_open and self.connection.inWaiting()>0):
-				# read the bytes and convert from binary array to ASCII
-				data_str = ser.read(ser.inWaiting()).decode('ascii')
-				# print the incoming string without putting a new-line ('\n') automatically after every print()
-				print(data_str, end='')
-
-				# parse data
-			
-				# update self.distance to new reading (moving average)
-				#self.distance = temp
+			# check if scanner is triggered by importer process
+			try:
+				# get without blocking (as that wouldn't go anywhere)
+				# raises Empty if no items in queue
+				item = self.sensor_queue.get(block=False)
+				if (item is not None):
+					self.distance = item
+			except QueueEmpty:
+				pass
 		else:
-			# fake the distance going up and down over time
+			# without sensor, fake the distance going up and down over time
 			if (self.distance_direction is True):
 				self.distance = self.distance + 0.02
 				if (self.distance > 6.5):
@@ -427,11 +444,65 @@ class DistanceSensor ():
 	def close (self):
 		# close serial connection
 		if (self.use_serial):
-			self.connection.close()
+			# signal to process it should close
+			self.process_queue.put(True)
+			# wait until it does so
+			print('Signalled and waiting for serial connection to close...')
+			self.process.join()
 
 	""" Returns distance in meters """
 	def get (self):
 		return self.distance
+
+	""" This function is run as a separate process to avoid locking due to a serial connection """
+	def run_serial (self):
+		# initiate serial connection
+		try:
+			self.connection          = serial.Serial()
+			self.connection.port     = '/dev/tty'
+			self.connection.baudrate = 9600
+			self.connection.timeout  = 1
+			if (sys.platform != 'darwin'):
+				self.connection.open()
+			print('Serial: on ' + self.connection.name)  # check actual port used
+		except:
+			print('Serial: no serial connection')
+
+		# run this while loop forever, unless a signal tells otherwise
+		while (True):
+			try:
+				# first, check if this process received a request to stop
+				try:
+					# get without blocking (as that wouldn't go anywhere)
+					# raises Empty if no items in queue
+					item = self.process_queue.get(block=False)
+					if (item is not None):
+						break
+				except QueueEmpty:
+					pass
+
+				# useful code
+				# if incoming bytes are waiting to be read from the serial input buffer
+				if (self.connection.is_open and self.connection.inWaiting()>0):
+					# read the bytes and convert from binary array to ASCII
+					data_str = self.connection.read(self.connection.in_waiting).decode('ascii')
+					# print the incoming string without putting a new-line ('\n') automatically after every print()
+					print(data_str, end='')
+
+					# parse data
+				
+					# update self.distance to new reading (moving average)
+					self.sensor_queue.put(distance)
+
+				# wait until next round
+				time.sleep(0.2)
+			# ignore any key input (handled by main thread)
+			except KeyboardInterrupt:
+				pass
+
+		# finally, after exiting while loop, it ends here
+		#print('Terminating serial process')
+		self.connection.close()
 
 
 class ImageManager ():
@@ -1027,7 +1098,7 @@ class GUI ():
 		self.colors = {
 			'foreground': pygame.Color(255, 255, 255),  # white
 			'background': pygame.Color(  0,   0,   0),  # black
-			'support'   : pygame.Color(200,  15,  10),  # red
+			'support'   : pygame.Color(255,   0,   0),  # red
 			'good'      : pygame.Color(  0, 180,  25)   # green
 		}
 
@@ -1160,7 +1231,7 @@ class GUI ():
 		# return surface and rectangle for future reference if need be
 		return (circle_rect)
 
-	def draw_slider (self, o='center', x=-1, y=-1, w=100, h=20, r=.5, fg='support', bg='background', a=1):
+	def draw_slider (self, o='center', x=-1, y=-1, w=100, h=20, r=.5, fg='support', bg='background', is_ui=False, a=1):
 		xpos = self.display_size[0]/2
 		if (x != -1):
 			xpos = x
@@ -1173,6 +1244,14 @@ class GUI ():
 		
 		# draw foreground rectangle (partial width)
 		self.draw_rectangle(o=o, x=xpos, y=ypos, w=r*w, h=h, c=fg, a=a, r=False)
+
+		# add handles if it's a UI slider
+		if (is_ui and r*w > 20):
+			handle_xpos = xpos + r*w
+			handle_ypos = ypos + h/2
+			self.draw_rectangle(o='center', x=handle_xpos -  5, y=handle_ypos, w=2, h=0.7*h, c='foreground', a=0.4, r=False)
+			self.draw_rectangle(o='center', x=handle_xpos - 10, y=handle_ypos, w=2, h=0.7*h, c='foreground', a=0.4, r=False)
+			self.draw_rectangle(o='center', x=handle_xpos - 15, y=handle_ypos, w=2, h=0.7*h, c='foreground', a=0.4, r=False)
 
 		# set flags
 		self.dirty = True
@@ -1332,44 +1411,67 @@ class BlankScreen (ProgramBase):
 
 class StatusProgram (ProgramBase):
 	def update (self):
-		# update every 1/4 second
-		if (time.time() > self.last_update + 0.25):
+		interactive = False
+		now         = time.time()
+		
+		# is state interactive?
+		if (self.core.input.state > self.core.input.REST):
+			self.dirty  = True
+			interactive = True
+
+		# check if input is given to adjust screen brightness
+		if (self.core.input.state >= self.core.input.DRAGGING):
+			# first check if all this actually started close to the slider
+			start_x = self.core.input.drag[0].x
+			start_y = abs(self.core.input.drag[0].y - 270)
+			if (start_x > 350 and start_y < 15):
+				# 350 is left edge, 440 is 800 - 450 range - 10 edge margin (so it's easier to get 100%)
+				value = round(100 * max(min((self.core.input.pos.x - 350) / 440, 1), 0))
+				self.core.set_display_brightness(value)
+
+		# update on change or every 1/4 second
+		if (self.dirty or now > self.last_update + 0.25):
 			super().update()  # this calls for update
 
 	def draw (self):
 		# identifier
-		self.gui.draw_text("Status",      o='left', x=20, y=20, fg='support', s='large')
+		self.gui.draw_text("Status",      o='left', x=20, y=10, fg='support', s='large')
 
 		# distance (+plus sensor state)
-		self.gui.draw_text("Distance sensor", o='left', x=150, y=80)
-		self.gui.draw_slider(o='left', x=350, y=102, w=450, h=5, r=(self.core.get_distance() / 6.5) )
-		self.gui.draw_text("{0:.2f}".format(self.core.get_distance()) + "m", o='left', x=350, y=80)
+		self.gui.draw_text("Distance sensor", o='left', x=150, y=65)
+		self.gui.draw_slider(o='left', x=350, y=92, w=450, h=5, r=(self.core.get_distance() / 6.5) )
+		self.gui.draw_text("{0:.2f}".format(self.core.get_distance()) + "m", o='left', x=350, y=65)
 
 		# number of photos in system
-		self.gui.draw_text("Photos",      o='left', x=150, y=140)
-		self.gui.draw_text(str(self.core.get_images_count()),       o='left', x=350, y=140)
+		self.gui.draw_text("Photos",      o='left', x=150, y=120)
+		self.gui.draw_text(str(self.core.get_images_count()),       o='left', x=350, y=120)
 
 		# storage (% available/used)
-		self.gui.draw_text("Disk space",  o='left', x=150, y=200)
-		self.gui.draw_slider(o='left', x=350, y=222, w=450, h=5, r=(self.core.get_disk_space() / 100.0), bg='good')
-		self.gui.draw_text(str(self.core.get_disk_space()) + "%",         o='left', x=350, y=200)
+		self.gui.draw_text("Disk space",  o='left', x=150, y=175)
+		self.gui.draw_slider(o='left', x=350, y=197, w=450, h=5, r=(self.core.get_disk_space() / 100.0), bg='good')
+		self.gui.draw_text(str(self.core.get_disk_space()) + "%",         o='left', x=350, y=175)
+
+		# memory usage
+		self.gui.draw_text("Memory usage", o='left', x=150, y=230)
+		self.gui.draw_slider(o='left', x=350, y=252, w=450, h=5, r=(self.core.get_memory_usage() / 100.0), bg='good')
+		self.gui.draw_text(str(self.core.get_memory_usage()) + "%",   o='left', x=350, y=230)
 		
 		# display brightness
-		self.gui.draw_text("Display brightness", o='left', x=150, y=260)
-		self.gui.draw_slider(o='left', x=350, y=282, w=450, h=5, r=(self.core.get_display_brightness() / 100.0) )
-		self.gui.draw_text(str(self.core.get_display_brightness()) + "%", o='left', x=350, y=260)
+		self.gui.draw_text("Display brightness", o='left', x=150, y=285)
+		self.gui.draw_slider(o='left', x=350, y=283, w=450, h=24, r=(self.core.get_display_brightness() / 100.0), is_ui=True)
+		self.gui.draw_text(str(self.core.get_display_brightness()) + "%", o='left', x=350, y=285, has_back=False)
 
 		# network (connected, IP)
-		self.gui.draw_text("Network",     o='left', x=150, y=320)
-		self.gui.draw_text(str(self.core.get_network_state()),      o='left', x=350, y=320)
+		self.gui.draw_text("Network",     o='left', x=150, y=340)
+		self.gui.draw_text(str(self.core.get_network_state()),      o='left', x=350, y=340)
 
 		# time
-		self.gui.draw_text("Time",        o='left', x=150, y=380)
-		self.gui.draw_text(str(self.core.get_time()),               o='left', x=350, y=380)
+		self.gui.draw_text("Time",        o='left', x=150, y=395)
+		self.gui.draw_text(str(self.core.get_time()),               o='left', x=350, y=395)
 
 		# temperature
-		self.gui.draw_text("Temperature", o='left', x=150, y=440)
-		self.gui.draw_text(str(self.core.get_temperature()) + "ºC", o='left', x=350, y=440)
+		self.gui.draw_text("Temperature", o='left', x=150, y=450)
+		self.gui.draw_text(str(self.core.get_temperature()) + "ºC", o='left', x=350, y=450)
 
 
 class DualDisplay (ProgramBase):
@@ -1403,6 +1505,7 @@ class DualDisplay (ProgramBase):
 		self.line_width         = 0
 		self.line_pos           = 0.5
 		self.last_line_pos      = 0.5
+		self.neutral_pos        = 0.5
 		self.picker_plus_surf_n = None
 		self.picker_plus_surf_a = None
 		self.picker_plus_pos    = 0.5
@@ -1414,7 +1517,6 @@ class DualDisplay (ProgramBase):
 		self.last_swap          = 0
 
 	def update (self):
-		self.dirty  = False
 		interactive = False
 		now         = time.time()
 		check_for_swap_over = False
@@ -1429,8 +1531,8 @@ class DualDisplay (ProgramBase):
 		# if user drag action started near the line, drag it and let line follow
 		if (self.core.input.state >= self.core.input.DRAGGING):
 			# first check if all this actually started close to the line's resting position
-			start_x = abs(self.core.input.drag[0].x - self.gui.display_size[0]/2)
-			if (start_x < 50):
+			start_x = abs(self.core.input.drag[0].x / self.gui.display_size[0] - self.neutral_pos)
+			if (start_x < 0.06):
 				self.line_pos = self.core.input.pos.x / self.gui.display_size[0]
 
 				if (self.core.input.state == self.core.input.RELEASED_DRAG):
@@ -1443,18 +1545,22 @@ class DualDisplay (ProgramBase):
 		
 		# bring line position back to normal, without abrupt change
 		if (settle_line_pos):
-			# get extra amount over .5, and take a portion of that off
-			self.line_pos = self.line_pos + 0.2 * (0.5 - self.line_pos)
+			# decide on neutral position - depends on ratings of images
+			# each image's rating can sway by [-.1, +.1]
+			if (self.im[0]['image'] is not None and self.im[1]['image'] is not None):
+				self.neutral_pos = 0.5 + self.im[0]['image'].rate / 10 - self.im[1]['image'].rate / 10
+			# get extra amount over neutral position, and take a portion of that off
+			self.line_pos = self.line_pos + 0.2 * (self.neutral_pos - self.line_pos)
 
 		# picker position depends on line
-		self.picker_plus_pos = 0.5 + 0.8 * (self.line_pos - 0.5)
-		self.picker_min_pos  = 0.5 + 1.2 * (self.line_pos - 0.5)
+		self.picker_plus_pos = self.neutral_pos + 0.8 * (self.line_pos - self.neutral_pos)
+		self.picker_min_pos  = self.neutral_pos + 1.2 * (self.line_pos - self.neutral_pos)
 
 		# if user indicates a clear preference, go with that
 		# this means a drag of the line crosses a threshold (position away from centre)
 		if (self.line_pos < 0.15 or self.line_pos > 0.85):
 			# set up for that
-			self.preferred_image = int(self.line_pos < 0.5)  # 1 or 0, if line > 0.5
+			self.preferred_image = int(self.line_pos < self.neutral_pos)  # 1 or 0, if line > 0.5
 
 			# do actual rating and swap
 			if (check_for_swap_over):
@@ -1465,8 +1571,6 @@ class DualDisplay (ProgramBase):
 				# give feedback (both for rating, and swap)
 				# get one image to fade quickly and swap over
 				self.im[ abs(self.preferred_image - 1) ]['swap'] = True
-				# reset drag of line (let it go back to default to avoid continued rating for a next duel)
-				# TODO
 				self.last_swap = now
 
 			self.dirty = True
@@ -1543,6 +1647,7 @@ class DualDisplay (ProgramBase):
 					i['max_time']  = self.default_time
 					
 					# adjust max time in case the two sides are too close together for swapping
+					# ideal is for each side to swap at halfway duration of the other
 					if (index == 1):
 						t1 = self.im[0]['since'] + self.im[0]['max_time']
 						t2 = self.im[1]['since'] + self.im[1]['max_time']
@@ -1666,71 +1771,117 @@ class PhotoSoup (ProgramBase):
 	def __init__ (self, core=None):
 		super().__init__(core)
 
-		self.base_size = 0.2
+		self.max_time  = 3.5 * 3600  # n hours
 
-		self.images = []
-		for n in range(0,9):
-			self.images.append({
-				'image': None,
-				'since': 0,
-				'v'    : Vector4(0, 0, 0, 0),
-				'size' : self.base_size
-			})
+		self.base_size = 0.3
+		self.goal_num  = 10
+		self.images    = []
 
 	def update (self):
 		now = time.time()
 
+		# TEMP
 		first=True
-		print('update')
+
+		"""
+		GUIDELINE:
+		.8 ~  3 images
+		.6 ~  5 images
+		.4 ~  9 images
+		.3 ~ 11 images
+		"""
+
+		# adjust base size (depends on distance, interactivity)
+		self.base_size = max(min(-0.36 * self.core.get_distance() + 0.93, 0.7), 0.3)
+
+		# adjust goal number of images (depends on base size)
+		self.goal_num = round(max(min(5.7 * self.core.get_distance() - 0.4, 11), 3))
+
+		# if goal has increased, add an image slot
+		if (self.goal_num > len(self.images)):
+			self.images.append({
+				'image': None,
+				'since': now,
+				'v'    : Vector4(0, 0, 0, 0),
+				'size' : 1
+			})
 
 		for i in self.images:
+			# if new or moved out of screen range, renew
 			if (i['image'] is None or i['v'].x < -50 or i['v'].x > 850 or i['v'].y < -50 or i['v'].y > 530):
-				i['image'] = self.core.images.get_next()
-				i['since'] = now
-				i['v'].set(
-					0.5 * self.core.gui.display_size[0],
-					0.5 * self.core.gui.display_size[1],
-					2 * pi * random.random(),
-					10 * random.random())
-			else:
-				# i['v'].x += -0.001 * cos(i['v'].z)
-				# i['v'].y += -0.001 * sin(i['v'].z)
+				if (self.goal_num >= len(self.images)):
+					# cleanup if possible
+					if (i['image'] is not None):
+						i['image'].unload()
+					
+					# renew this image slot
+					i['image'] = self.core.images.get_next()
+					i['since'] = now
+					i['v'].set(
+						random.random() * self.core.gui.display_size[0],
+						random.random() * self.core.gui.display_size[1],
+						2 * pi * random.random(),
+						max(1.3 * random.random(), 0.15))
+				else:
+					# remove this image slot
+					i['image'].unload()  # free memory
+					self.images.remove(i)
 
-				""" --------
-				there is the default force with (polar) direction i['v'].w and magnitude i['v'].w
-				each other image has influence, through attraction Fa and repulsion Fr
-				those two forces are from x,y towards the other x,y with radian angle ß and -ß
-				so the sum of the two forces influence the default force """
+				self.dirty = True
+			# else, update the current image's position, size, etc.
+			else:
+				# adjust the size
+				i['size'] = 1 + (i['image'].rate / 5)  # potential range is thus [0.8, 1.2]
+
+				# adjust speed (magnitude, i['v'].w)
+
+				# adjust position (may depend on size, so comes later)
 
 				# calculate the base vector for this image (with magnitude w, angle z)
 				vi_x = i['v'].w * cos(i['v'].z)
-				vi_y = i['v'].w * sin(i['v'].z)
-				#print('1', vi_x, vi_y)
+				vi_y = i['v'].w * sin(i['v'].z) * -1  # -1 because -y is up
 
+				"""
+				each other image has influence, through attraction Fa and repulsion Fr
+				those two forces are from x,y towards the other x,y with radian angle ß and -ß
+				so the sum of the two forces influence the default force """
 				for img in self.images:
-					# calculate influence
-					f = self.get_force_attraction(i, img) - self.get_force_repulsion(i, img)
-					a = self.get_angle(i, img)
+					if (img is not i):
+						# calculate influence
+						f = self.get_force_attraction(i, img) - self.get_force_repulsion(i, img)
+						a = self.get_angle(i, img)
 
-					# add this vector to the base
-					vi_x += f * cos(a)
-					vi_y += f * sin(a)
-					#print('2', vi_x, vi_y, f, a)
+						# add this vector to the base
+						vi_x += f * cos(a)
+						vi_y += f * sin(a) * -1
+						#print(round(vi_x), round(vi_y), f, a)
 
 				# add the resultant vector to get the new position
 				#print('3', vi_x, vi_y)
 				i['v'].x += vi_x
 				i['v'].y += vi_y
 
+				if (vi_x != 0 or vi_y != 0):
+					self.dirty = True
+
+			# TEMP
 			if first:
-				print(i['v'].x, i['v'].y)
+				#print(i['v'].x, i['v'].y)
 				first=False
 
-		self.dirty = True
+		#self.dirty = True
 
 		# indicate update is necessary, if so, always do full to avoid glitches
 		if (self.dirty):
 			super().update(full=True)
+
+	def make_inactive (self):
+		# reset variables to None to free memory
+		for i in self.images:
+			if (i['image'] is not None):
+				i['image'].unload()
+		self.images = []
+		super().make_inactive()
 
 	def get_angle (self, a, b):
 		dx = b['v'].x - a['v'].x
@@ -1742,18 +1893,25 @@ class PhotoSoup (ProgramBase):
 
 	def get_force_attraction (self, a, b):
 		# TODO increase/reduce attraction based on image rating
-		return 0.1 * self.get_distance(a, b)
+		return 0.0001 * self.get_distance(a, b)
 
 	def get_force_repulsion (self, a, b):
-		# TODO add check for overlapping, to increase repulsion in that case
-		distance = max(self.get_distance(a, b), 0.01)  # avoid divide by zero problems
-		return 0.002 / pow(distance, 2)
+		distance = self.get_distance(a, b)
+		# substract sum of radii in pixels, so distance is calculated for closest edges
+		distance -= (a['size'] + b['size'] * self.base_size * self.core.gui.display_size[1])
+		
+		# avoid divide by zero problems
+		if (distance < 0.01):
+			distance = 0.01
+
+		return 0.005 / pow(distance, 2)
 
 	def draw (self):
 		for i in self.images:
 			xpos = i['v'].x / self.core.gui.display_size[0]
 			ypos = i['v'].y / self.core.gui.display_size[1]
-			self.gui.draw_image(i['image'], pos=(xpos, ypos), size=(i['size'], i['size']), rs=False, ci=True)
+			size = i['size'] * self.base_size * self.core.gui.display_size[1]
+			self.gui.draw_image(i['image'], pos=(xpos, ypos), size=(size, size), rs=False, ci=True)
 
 
 # ----- MAIN ------------------------------------------------------------------
