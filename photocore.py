@@ -63,17 +63,17 @@ class Photocore ():
 		self.program_active_index    = 1
 		self.program_preferred_index = 1
 		self.max_time_for_program    = time.time() + 30
-		self.programs.append( BlankScreen(  core=self) )
-		self.programs.append( StatusProgram(core=self) )
-		self.programs.append( DualDisplay(  core=self) )
-		self.programs.append( PhotoSoup(    core=self) )
+		self.add_program('BlankScreen')
+		self.add_program('StatusProgram')
+		self.add_program('DualDisplay')
+		self.add_program('PhotoSoup')
 
 		if len(self.programs) < 1:
 			print('No programs to run, will exit')
 			self.do_exit = True
 		else:
 			# begin with a program
-			self.set_active(self.program_active_index)
+			self.set_active(self.program_active_index, force=True)
 
 	def update (self):
 		now = time.time()
@@ -142,12 +142,12 @@ class Photocore ():
 	def get_active (self):
 		return self.programs[self.program_active_index]
 
-	def set_active (self, index=0):
+	def set_active (self, index=0, force=False):
 		# set within bounds of [0,highest possible index]
 		new_index = min(max(index, 0), len(self.programs)-1)
 
 		# only switch when index has changed
-		if (new_index != self.program_active_index):
+		if (force or new_index != self.program_active_index):
 			# cleanup
 			self.get_active().make_inactive()
 			self.images.check_use(0)
@@ -159,6 +159,18 @@ class Photocore ():
 
 	def set_preferred (self, index=0):
 		self.program_preferred_index = index
+
+	def add_program (self, name):
+		# create instance of program class (based on name)
+		program = globals()[name](core=self)
+
+		# check for any prior data
+		prior_data = self.data.get_program_match( program.__class__.__name__ )
+		if (prior_data is not None):
+			program.set_shown(prior_data['shown'])
+
+		# add to list
+		self.programs.append(program)
 
 	def set_next_program (self):
 		# set preferred to next, or back to zero if at limits
@@ -219,8 +231,9 @@ class DataManager ():
 	def __init__ (self, core=None):
 		self.core  = core
 		self.data  = {
-			'log': [],
-			'images': []
+			'log':      [],
+			'programs': [],
+			'images':   []
 		}
 		self.dirty     = False
 		self.last_save = 0  # timestamp
@@ -228,7 +241,10 @@ class DataManager ():
 
 		try:
 			with open('data.bin', 'rb') as f:
-				self.data = pickle.load(f)
+				loaded_data = pickle.load(f)
+				for key in ('log', 'programs', 'images'):
+					if (key in loaded_data):
+						self.data[key] = loaded_data[key]
 		except IOError as eio:
 			pass  # called when file doesn't exist (yet), which is fine
 		except Exception as e:
@@ -236,7 +252,30 @@ class DataManager ():
 
 	def update (self):
 		if (self.dirty and self.last_save < time.time() - self.min_time_between_saves):
-			self.data['images'] = self.core.images.images  # reference to a list
+			# for images reference to a list
+			self.data['images'] = self.core.images.images
+
+			# programs do not get referenced/stored in full
+			# instead, keep track through simpler objects
+			for program in self.core.programs:
+				match = False
+
+				# attempt to match
+				for item in self.data['programs']:
+					if (program.__class__.__name__ == item['name']):
+						match = True
+						item['shown'] = program.shown
+
+						# after a match, no need to continue this inner for loop
+						break
+
+				# else store a new item (that hopefully matches on future tries)
+				if (not match):
+					self.data['programs'].append({
+						'name': program.__class__.__name__,
+						'shown': program.shown
+					})
+
 			self.save()
 			self.dirty = False
 
@@ -262,12 +301,23 @@ class DataManager ():
 				for log in self.data['log']:
 					f.write(log + '\n')
 
+				f.write('\nPROGRAMS\n-----------------\n')
+				for program in self.data['programs']:
+					f.write(program['name'] + '; shown: ' + str(program['shown']) + '\n')
+
 				f.write('\nIMAGES\n-----------------\n')
 				for img in self.data['images']:
 					f.write(str(img) + '\n')
 
+	def get_program_match (self, name):
+		for program in self.data['programs']:
+			if program['name'] == name:
+				return program
+		# without a match
+		return None
+
 	""" Return a matching image based on file path """
-	def get_match (self, file_path):
+	def get_image_match (self, file_path):
 		for img in self.data['images']:
 			if (img.file == file_path):
 				return img
@@ -524,7 +574,10 @@ class ImageManager ():
 		self.process.start()
 
 		# also manage a simple webserver interface for image uploads
-		self.upload_server = SimpleServer(debug=True, port=80, use_signals=False, regular_run=False)
+		if (os.geteuid() == 0):  # with root access
+			self.upload_server = SimpleServer(debug=self.core.is_debug, port=80, use_signals=False, regular_run=False)
+		else:
+			self.upload_server = SimpleServer(debug=self.core.is_debug, use_signals=False, regular_run=False)
 
 		# load images
 		self.scan_folder(self.image_folder, 'append')
@@ -595,7 +648,7 @@ class ImageManager ():
 		if (duplicate == False):
 			p = Image(file_path)
 			# also check if data is available on this image
-			file_match = self.core.data.get_match(file_path)
+			file_match = self.core.data.get_image_match(file_path)
 			if (file_match is not None):
 				p.set_shown(file_match.shown)
 				p.set_rate(file_match.rate)
@@ -759,8 +812,12 @@ class Image ():
 		self.is_loaded = True
 
 	""" Free up memory by unloading an image no longer needed """
-	def unload (self):
+	def unload (self, since=None):
 		self.is_loaded = False
+
+		# also record time this image was shown
+		if (since is not None):
+			self.was_shown(time.time() - since)  # now - timestamp of its first showing
 
 		# set image to None if a default size
 		# or delete if non-default
@@ -938,7 +995,7 @@ class InputHandler ():
 		self.pos        = Vector4(0,0,0)  # x, y, timestamp
 		self.state      = self.REST
 		self.drag       = []  # list of positions, empty if no drag active
-		self.last_touch = 0
+		self.last_touch = 0   # timestamp of last time user touched the screen
 		self.t          = time.time  # use a reference to avoid issues in touch_handler
 
 		# set up pygame events (block those of no interest to keep sanity/memory)
@@ -1357,13 +1414,15 @@ class GUI ():
 
 class ProgramBase ():
 	def __init__ (self, core=None):
-		self.core        = core
-		self.gui         = core.gui
-		self.is_active   = False
-		self.last_update = 0  # seconds since epoch
-		self.dirty       = True
-		self.first_run   = True
-		self.max_time    = 300  # in seconds
+		self.core         = core
+		self.gui          = core.gui
+		self.is_active    = False
+		self.active_since = time.time()
+		self.last_update  = 0  # seconds since epoch
+		self.dirty        = True
+		self.first_run    = True
+		self.max_time     = 300  # in seconds
+		self.shown        = []   # list, each item denotes for how long program has been active
 
 	""" code to run every turn, needs to signal whether a gui update is needed """
 	def update (self, dirty=True, full=False):
@@ -1381,14 +1440,21 @@ class ProgramBase ():
 
 	""" code to run when program becomes active """
 	def make_active (self):
-		self.is_active = True
-		self.dirty     = True
-		self.first_run = True
+		self.is_active    = True
+		self.active_since = time.time()  # now
+		self.dirty        = True
+		self.first_run    = True
 		self.gui.set_dirty_full()
 
 	""" code to run when this program ceases to be active """
 	def make_inactive (self):
 		self.is_active = False
+		# keep track of activity, no need for more precision than int
+		time_active = int(time.time() - self.active_since)
+		if (time_active > 0):  # avoid adding arbitrarily small moments of use
+			self.shown.append(time_active)
+		self.core.data.set_dirty()
+
 		self.dirty     = False
 		self.first_run = True
 		self.gui.set_dirty_full()
@@ -1402,6 +1468,9 @@ class ProgramBase ():
 
 	def get_max_time (self):
 		return self.max_time
+
+	def set_shown (self, shown=[]):
+		self.shown = list(shown)  # list() avoids referencing to inbound list object
 
 
 class BlankScreen (ProgramBase):
@@ -1634,9 +1703,9 @@ class DualDisplay (ProgramBase):
 				if (i['swap'] or i['since'] < now - i['max_time']):
 					# unload current image
 					if (i['image'] is not None):
-						i['image'].was_shown(now - i['since'])  # report time since it appeared
 						self.core.data.set_dirty()
-						i['image'].unload()  # free memory
+						# free memory and report time since it appeared
+						i['image'].unload( i['since'] )
 					
 					# reassign and reset timers, etc.
 					i['swap']      = False
@@ -1678,7 +1747,7 @@ class DualDisplay (ProgramBase):
 
 		for i in self.im:
 			if (i['image'] is not None):
-				i['image'].unload()
+				i['image'].unload( i['since'] )
 			if (i['image_new'] is not None):
 				i['image_new'].unload()
 		super().make_inactive()
@@ -1812,7 +1881,7 @@ class PhotoSoup (ProgramBase):
 				if (self.goal_num >= len(self.images)):
 					# cleanup if possible
 					if (i['image'] is not None):
-						i['image'].unload()
+						i['image'].unload( i['since'] )  # report time since it appeared
 					
 					# renew this image slot
 					i['image'] = self.core.images.get_next()
@@ -1823,8 +1892,8 @@ class PhotoSoup (ProgramBase):
 						2 * pi * random.random(),
 						max(1.3 * random.random(), 0.15))
 				else:
-					# remove this image slot
-					i['image'].unload()  # free memory
+					# remove this image slot to free memory
+					i['image'].unload( i['since'] )  # report time since it appeared
 					self.images.remove(i)
 
 				self.dirty = True
@@ -1879,7 +1948,7 @@ class PhotoSoup (ProgramBase):
 		# reset variables to None to free memory
 		for i in self.images:
 			if (i['image'] is not None):
-				i['image'].unload()
+				i['image'].unload( i['since'] )
 		self.images = []
 		super().make_inactive()
 

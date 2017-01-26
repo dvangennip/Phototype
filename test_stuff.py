@@ -52,3 +52,13 @@ def power (a,b):
 
 c, d = power(2,3)
 print(c,d)
+
+# ------
+
+class TestClass ():
+	def __str__ (self):
+		return self.__class__.__name__
+
+class_ = globals()['TestClass']
+instance = class_()
+print(instance)
