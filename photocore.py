@@ -199,7 +199,7 @@ class Photocore ():
 		self.display.set_brightness(brightness)
 
 	def get_time (self):
-		return time.strftime("%H:%M:%S  %d %B %Y", time.localtime())
+		return time.strftime("%H:%m:%S  %d %B %Y", time.localtime())
 
 	def set_time (self):
 		pass
@@ -231,9 +231,10 @@ class DataManager ():
 	def __init__ (self, core=None):
 		self.core  = core
 		self.data  = {
-			'log':      [],
-			'programs': [],
-			'images':   []
+			'log':          [],
+			'programs':     [],
+			'images':       [],
+			'interactions': []
 		}
 		self.dirty     = False
 		self.last_save = 0  # timestamp
@@ -242,7 +243,7 @@ class DataManager ():
 		try:
 			with open('data.bin', 'rb') as f:
 				loaded_data = pickle.load(f)
-				for key in ('log', 'programs', 'images'):
+				for key in ('log', 'programs', 'images', 'interactions'):
 					if (key in loaded_data):
 						self.data[key] = loaded_data[key]
 		except IOError as eio:
@@ -282,9 +283,16 @@ class DataManager ():
 	def close (self):
 		self.save(export=True)
 
+	def log (self, message):
+		self.set_dirty(message)
+
+	def log_action (self, action, value=None):
+		self.data['interactions'].append({'timestamp': int(time.time()), 'action': action, 'value': value})
+		self.set_dirty()
+
 	def set_dirty (self, message=None):
 		if (message is not None):
-			t = time.strftime("%Y-%M-%d %H:%M:%S - ", time.localtime())
+			t = time.strftime("%Y-%m-%d %H:%M:%S - ", time.localtime())
 			self.data['log'].append(t + message)
 		self.dirty = True
 
@@ -304,6 +312,11 @@ class DataManager ():
 				f.write('\nPROGRAMS\n-----------------\n')
 				for program in self.data['programs']:
 					f.write(program['name'] + '; shown: ' + str(program['shown']) + '\n')
+
+				f.write('\nINTERACTIONS\n-----------------\n')
+				for ix in self.data['interactions']:
+					t = time.strftime("%Y-%m-%d %H:%M:%S - ", time.localtime(ix['timestamp']))
+					f.write(t + ix['action'] + '; value: ' + str(ix['value']) + '\n')
 
 				f.write('\nIMAGES\n-----------------\n')
 				for img in self.data['images']:
@@ -992,11 +1005,12 @@ class InputHandler ():
 		self.RELEASED_HOLD = 5
 		self.RELEASED_DRAG = 6
 
-		self.pos        = Vector4(0,0,0)  # x, y, timestamp
-		self.state      = self.REST
-		self.drag       = []  # list of positions, empty if no drag active
-		self.last_touch = 0   # timestamp of last time user touched the screen
-		self.t          = time.time  # use a reference to avoid issues in touch_handler
+		self.pos            = Vector4(0,0,0)  # x, y, timestamp
+		self.state          = self.REST
+		self.drag           = []  # list of positions, empty if no drag active
+		self.last_touch     = 0   # timestamp of last time user touched the screen
+		self.t              = time.time  # use a reference to avoid issues in touch_handler
+		self.activity_start = 0   # timestamp to track length of interacting with device
 
 		# set up pygame events (block those of no interest to keep sanity/memory)
 		# types kept: QUIT, KEYDOWN, KEYUP, MOUSEMOTION, MOUSEBUTTONDOWN, MOUSEBUTTONUP
@@ -1033,15 +1047,24 @@ class InputHandler ():
 		# if last touch event was long ago (> n seconds), set to resting state
 		if (self.last_touch < now - 0.25 and self.state != self.DRAGGING):
 			self.state = self.REST
-		else:
-			# indicate to programs that a click occured, drag started, or ended
-			pass
+		elif (self.state != self.REST and self.state < self.RELEASED):
+			# begin activity tracking if not done yet
+			if (self.activity_start is None):
+				self.activity_start = now
+		
+		# if no new activity is detected after n seconds, count the activity as over
+		if (self.activity_start is not None and self.last_touch < now - 15):
+			activity_length = self.last_touch - self.activity_start
+			# if significant/long enough, log this activity
+			if (activity_length > 2):
+				self.core.data.log_action('touches', int(activity_length))
+			# reset tracker
+			self.activity_start = None
 
 		# handle pygame event queue
 		events = pygame.event.get()
 
-		# for a mock run, send events also to touch handler
-		# (as pygame events cannot be taken from its queue twice)
+		# for a mock run, get input another way
 		if (sys.platform == 'darwin'):
 			self.mock_touch_generator()
 			
@@ -1061,7 +1084,7 @@ class InputHandler ():
 	def get_last_touch (self):
 		return self.last_touch
 
-	""" Uses pygame mouse events to feed touch input """
+	""" Uses pygame mouse data to feed touch input """
 	def mock_touch_generator (self):
 		send_event = False
 
@@ -1097,6 +1120,7 @@ class InputHandler ():
 			mock_touch = Touch(0, self.mock_pos[0], self.mock_pos[1])  # slot, x, y
 			self.touch_handler(self.mock_event, mock_touch)
 
+	""" this method is called as an event handler """
 	def touch_handler(self, event, touch):
 		# data in touch: touch.slot, touch.id (uniquem or -1 after release), touch.valid, touch.x, touch.y
 		self.last_touch = self.t()
@@ -1452,7 +1476,7 @@ class ProgramBase ():
 		# keep track of activity, no need for more precision than int
 		time_active = int(time.time() - self.active_since)
 		if (time_active > 0):  # avoid adding arbitrarily small moments of use
-			self.shown.append(time_active)
+			self.shown.append({'since': int(self.active_since), 'duration': time_active})
 		self.core.data.set_dirty()
 
 		self.dirty     = False
@@ -1492,7 +1516,7 @@ class StatusProgram (ProgramBase):
 		if (self.core.input.state >= self.core.input.DRAGGING):
 			# first check if all this actually started close to the slider
 			start_x = self.core.input.drag[0].x
-			start_y = abs(self.core.input.drag[0].y - 270)
+			start_y = abs(self.core.input.drag[0].y - 295)  # 295 is middle of slider y-position
 			if (start_x > 350 and start_y < 15):
 				# 350 is left edge, 440 is 800 - 450 range - 10 edge margin (so it's easier to get 100%)
 				value = round(100 * max(min((self.core.input.pos.x - 350) / 440, 1), 0))
@@ -1636,7 +1660,13 @@ class DualDisplay (ProgramBase):
 				# rate both images
 				self.im[0]['image'].do_rate(self.preferred_image == 0)  # True if line is far right, False otherwise
 				self.im[1]['image'].do_rate(self.preferred_image == 1)  # vice versa, True if far left
-				self.core.data.set_dirty()
+
+				# log this action
+				log_value = self.im[0]['image'].file
+				log_value += (' > ',' < ')[self.preferred_image]
+				log_value += self.im[1]['image'].file
+				self.core.data.log_action('dd.rate', log_value)
+
 				# give feedback (both for rating, and swap)
 				# get one image to fade quickly and swap over
 				self.im[ abs(self.preferred_image - 1) ]['swap'] = True
@@ -1646,8 +1676,8 @@ class DualDisplay (ProgramBase):
 		else:
 			self.preferred_image = None
 
-		# make sure any change in line position is registered as change
-		if (self.line_pos != self.last_line_pos):
+		# make sure any meaningful change in line position is registered as change
+		if (abs(self.line_pos - self.last_line_pos) > 0.1):
 			self.last_line_pos = self.line_pos
 			self.dirty = True
 
@@ -1722,7 +1752,7 @@ class DualDisplay (ProgramBase):
 						t2 = self.im[1]['since'] + self.im[1]['max_time']
 						if (abs(t1-t2) < self.default_time / 2):
 							i['max_time'] += 1
-					
+				
 				self.dirty = True
 
 		# indicate update is necessary, if so, always do full to avoid glitches
@@ -2012,7 +2042,7 @@ if __name__ == '__main__':
 		f.close()
 		# make a final attempt to close gracefully
 		if (core is not None):
-			core.close()
+			core.close(1)
 	finally:
 		# if all else fails, quit pygame to get out of fullscreen
 		pygame.quit()
