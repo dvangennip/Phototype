@@ -1,0 +1,21 @@
+# installed in /lib/systemd/system/photocore.service
+# then run sudo systemctl enable photocore.service
+# sudo systemctl daemon-reload
+# sudo systemctl start|stop photocore.service
+# this service file also needs chmod 644 to work
+
+[Unit]
+Description=Phototype is an interactive research prototype
+After=graphical.target # multi-user.target
+
+[Service]
+Type=idle
+# Type=idle is like simple, but with a brief 5s timeout before starting
+User=root
+WorkingDirectory=/home/pi/phototype
+ExecStart=/usr/bin/python3 /home/pi/phototype/photocore.py
+#Restart=always
+# Restart=no (no is the default), set a delay for restart with RestartSec=20
+
+[Install]
+WantedBy=graphical.target # multi-user.target

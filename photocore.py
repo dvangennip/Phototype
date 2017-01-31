@@ -13,6 +13,7 @@ from pygame.locals import *
 from queue import Empty as QueueEmpty
 import random
 import serial
+import signal
 import sys
 import time
 import traceback
@@ -36,12 +37,25 @@ else:
 # make wifi connecting
 
 # check data export and logging abilities
+--- any distance sensor judgements of watching/paying attention?
+
+# check uploader code/js/css for backups
+
+----- BEFORE DEPLOYMENT ------
+- set /lib/systemd/system/photocore.service to Restart=always
+- set is_debug = False
+- delete all photos, logfiles, etc
+
 """
 # ----- CLASSES ---------------------------------------------------------------
 
 
 class Photocore ():
 	def __init__ (self):
+		# prepare for a systemd-initiated run
+		# systemd may send SIGHUP signals which, if unhandled, gets the process killed
+		signal.signal(signal.SIGHUP, self.handle_signal)
+
 		# init variables
 		self.do_exit      = False
 		self.is_debug     = True
@@ -67,6 +81,8 @@ class Photocore ():
 		self.add_program('StatusProgram')
 		self.add_program('DualDisplay')
 		self.add_program('PhotoSoup')
+
+		self.data.log('Photocore started.')
 
 		if len(self.programs) < 1:
 			print('No programs to run, will exit')
@@ -111,12 +127,16 @@ class Photocore ():
 
 		# switch over if necessary
 		if (self.program_preferred_index != self.program_active_index):
-			self.set_active(self.program_preferred_index)
+			switch_success = self.set_active(self.program_preferred_index)
 
-			# decide on the time the next program will be active
-			# uses the program's max time as a basis, with some added randomness [0.75, 1.25]
-			random_time = ((random.random() / 2) + 0.75) * self.get_active().get_max_time()
-			self.max_time_for_program   = now + random_time
+			if (switch_success):
+				# decide on the time the next program will be active
+				# uses the program's max time as a basis, with some added randomness [0.75, 1.25]
+				random_time = ((random.random() / 2) + 0.75) * self.get_active().get_max_time()
+				self.max_time_for_program = now + random_time
+			else:
+				# add another minute to time allowance to avoid trying once again on next loop
+				self.max_time_for_program += 60
 
 		# update active program
 		self.programs[self.program_active_index].update()
@@ -124,7 +144,12 @@ class Photocore ():
 		# last, update GUI
 		self.gui.update()
 
-	def close (self):
+	def close (self, exit_code=0):
+		if (exit_code == 0):
+			self.data.log('Photocore closing.')
+		else:
+			self.data.log('Photocore closing, with errors.')
+
 		# close in reverse order from update
 		for program in self.programs:
 			program.close()
@@ -138,24 +163,40 @@ class Photocore ():
 		self.display.close()
 		self.network.close()
 
+	""" handler that ignores system signals """
+	def handle_signal (self, signum, frame):
+		pass
+
 	""" Returns reference to active program """
 	def get_active (self):
 		return self.programs[self.program_active_index]
 
+	""" Returns True if switched, False otherwise """
 	def set_active (self, index=0, force=False):
 		# set within bounds of [0,highest possible index]
 		new_index = min(max(index, 0), len(self.programs)-1)
 
 		# only switch when index has changed
 		if (force or new_index != self.program_active_index):
-			# cleanup
-			self.get_active().make_inactive()
-			self.images.check_use(0)
+			# check if prospective program can be run
+			if (self.programs[new_index].can_run()):
+				# cleanup
+				self.get_active().make_inactive()
+				self.images.check_use(0)
 
-			# switch
-			self.program_active_index    = new_index
-			self.program_preferred_index = new_index
-			self.get_active().make_active()
+				# switch
+				self.program_active_index    = new_index
+				self.program_preferred_index = new_index
+				self.get_active().make_active()
+
+				self.data.log('Switching to program ' + self.get_active().__class__.__name__)
+
+				return True
+			else:
+				# cannot switch, so refrain from trying on next run
+				self.program_preferred_index = self.program_active_index
+
+		return False
 
 	def set_preferred (self, index=0):
 		self.program_preferred_index = index
@@ -1194,7 +1235,7 @@ class GUI ():
 			self.gui_font       = pygame.font.Font('/usr/share/fonts/truetype/freefont/FreeSansBold.ttf', 16)
 			self.gui_font_large = pygame.font.Font('/usr/share/fonts/truetype/freefont/FreeSansBold.ttf', 30)
 			self.screen = pygame.display.set_mode((0,0), pygame.FULLSCREEN)
-
+		
 	def update (self):
 		# core will already request active program to update, which may set dirty flag
 		# once updated, check if redraw of GUI is necessary
@@ -1448,6 +1489,10 @@ class ProgramBase ():
 		self.max_time     = 300  # in seconds
 		self.shown        = []   # list, each item denotes for how long program has been active
 
+	""" any conditions that prevent this program from working should be checked prior to becoming active """
+	def can_run (self):
+		return True
+
 	""" code to run every turn, needs to signal whether a gui update is needed """
 	def update (self, dirty=True, full=False):
 		# always trigger update in absence of better judgement
@@ -1608,6 +1653,11 @@ class DualDisplay (ProgramBase):
 		self.picker_alpha       = 1
 		self.preferred_image    = None
 		self.last_swap          = 0
+
+	def can_run (self):
+		if (not self.core.get_images_count() > 20):
+			return False
+		return True
 
 	def update (self):
 		interactive = False
@@ -2015,12 +2065,16 @@ class PhotoSoup (ProgramBase):
 
 # ----- MAIN ------------------------------------------------------------------
 
+""" globally available logging code """
+def logging (message):
+	with open('errors.log','a') as f:
+		t = time.strftime("%Y-%m-%d %H:%M:%S - ", time.localtime())
+		f.write(t + str(message) + '\n')
 
 """ Unless this script is imported, do the following """
 if __name__ == '__main__':
 	# define here so it's available later, also in case of exception handling
 	core = None
-
 	try:
 		# initialise all components
 		core = Photocore()
@@ -2036,10 +2090,9 @@ if __name__ == '__main__':
 			else:
 				# pause between frames
 				pygame.time.wait(50)
-	except Exception:
-		f = open('errors.log', 'a')
-		traceback.print_exc(file=f)  #sys.stdout
-		f.close()
+	except Exception as e:
+		with open('errors.log', 'a') as f:
+			traceback.print_exc(file=f)  #sys.stdout
 		# make a final attempt to close gracefully
 		if (core is not None):
 			core.close(1)
