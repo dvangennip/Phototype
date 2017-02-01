@@ -39,9 +39,8 @@ else:
 # check data export and logging abilities
 --- any distance sensor judgements of watching/paying attention?
 
-# check uploader code/js/css for backups
-
 ----- BEFORE DEPLOYMENT ------
+- set rollover times to something reasonable, esp. for DualDisplay (20/3?)
 - set /lib/systemd/system/photocore.service to Restart=always
 - set is_debug = False
 - delete all photos, logfiles, etc

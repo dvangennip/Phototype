@@ -34,12 +34,14 @@ Uploader.onSourceFileDrop = function (inEvent) {
 	//var files = (inEvent && inEvent.dataTransfer) ? inEvent.dataTransfer.files : undefined;
 
 	// pass on event to Dropzone.JS element for proper handling
-	document.getElementById('image_dropzone').dispatchEvent(inEvent);
+	if (Dropzone && Dropzone.instances[0]) {
+		Dropzone.instances[0].drop(inEvent);
+	}
 
 	// reset looks
 	Uploader.dropNotification.style.display = 'none';
 	// prevent setting page url to this file location
-	//inEvent.preventDefault();
+	inEvent.preventDefault();
 };
 
 // --- Initialise --------------------------------------------------------------
