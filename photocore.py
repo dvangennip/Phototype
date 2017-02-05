@@ -34,10 +34,10 @@ else:
 
 # enable serial connection and fetch distance data
 
-# make wifi connecting
-
 # check data export and logging abilities
 --- any distance sensor judgements of watching/paying attention?
+
+# have a user-initiated on-screen exit procedure to shutdown device
 
 ----- BEFORE DEPLOYMENT ------
 - set rollover times to something reasonable, esp. for DualDisplay (20/3?)
@@ -235,8 +235,8 @@ class Photocore ():
 	def get_display_brightness (self):
 		return self.display.get_brightness()
 
-	def set_display_brightness (self, brightness=100):
-		self.display.set_brightness(brightness)
+	def set_display_brightness (self, brightness=100, user_initiated=False):
+		self.display.set_brightness(brightness, user_initiated)
 
 	def get_time (self):
 		return time.strftime("%H:%m:%S  %d %B %Y", time.localtime())
@@ -276,9 +276,11 @@ class DataManager ():
 			'images':       [],
 			'interactions': []
 		}
-		self.dirty     = False
-		self.last_save = 0  # timestamp
-		self.min_time_between_saves = 120  # avoid excessive writing to disk
+		self.dirty       = False
+		self.last_save   = 0  # timestamp
+		self.last_export = time.time()  # timestamp at now, to avoid immediate export
+		self.min_time_between_saves  = 120  # avoid excessive writing to disk
+		self.min_time_between_export = 7200  # once every 2 hours
 
 		try:
 			with open('data.bin', 'rb') as f:
@@ -317,7 +319,11 @@ class DataManager ():
 						'shown': program.shown
 					})
 
-			self.save()
+			# request save, and export if it has been a while
+			if (self.last_export < time.time() - self.min_time_between_export):
+				self.save(export=True)
+			else:
+				self.save()
 			self.dirty = False
 
 	def close (self):
@@ -361,6 +367,8 @@ class DataManager ():
 				f.write('\nIMAGES\n-----------------\n')
 				for img in self.data['images']:
 					f.write(str(img) + '\n')
+
+			self.last_export = time.time()
 
 	def get_program_match (self, name):
 		for program in self.data['programs']:
@@ -450,12 +458,33 @@ class NetworkManager ():
 
 class DisplayManager ():
 	def __init__ (self):
-		self.brightness = 255
-		self.is_on      = True
-		self.path       = "/sys/class/backlight/rpi_backlight/"
+		self.brightness  = 255
+		self.is_on       = True
+		self.path        = "/sys/class/backlight/rpi_backlight/"
+		self.last_change = 0
+		self.last_manual_change = 0
 
 	def update (self):
-		pass
+		now = time.time()
+
+		# only automatically adjust display brightness if user hasn't overridden this
+		# this the past n seconds (30 min)
+		if (self.last_manual_change < now - 1800):
+			# only auto adjust when some time has passed since the last change
+			if (self.last_change < now - 60):
+				# derive value between high and low based on current time
+				low             = 5
+				high            = 70
+				auto_brightness = low
+
+				# take current time, convert to [0-pi], then take sin to get [20-80]
+				current_time = time.localtime()
+				tt = current_time.tm_hour + current_time.tm_min/60.0  # [0-23.98]
+
+				# at night (22.5 -> 6) just use low value
+				if (tt > 6 and tt < 22.5):
+					auto_brightness = (high - low) * sin(((tt-6) / (22.5-6)) * pi) + low
+				self.set_brightness(auto_brightness)
 
 	def close (self):
 		pass
@@ -476,12 +505,16 @@ class DisplayManager ():
 			return round(self.brightness / 2.55)
 
 	""" Input is in range [0,100] """
-	def set_brightness (self, brightness):
+	def set_brightness (self, brightness, user_initiated=False):
 		self.brightness = round(max(min(2.55 * brightness, 255), 0))
 		self.is_on = (self.brightness > 0)
 
 		# set state accordingly
 		self._set_value("brightness", self.brightness)
+
+		if (user_initiated):
+			self.last_manual_change = time.time()
+		self.last_change = time.time()
 
 	# ----- functions below via: https://github.com/linusg/rpi-backlight/ --------
 
@@ -1564,7 +1597,7 @@ class StatusProgram (ProgramBase):
 			if (start_x > 350 and start_y < 15):
 				# 350 is left edge, 440 is 800 - 450 range - 10 edge margin (so it's easier to get 100%)
 				value = round(100 * max(min((self.core.input.pos.x - 350) / 440, 1), 0))
-				self.core.set_display_brightness(value)
+				self.core.set_display_brightness(value, True)
 
 		# update on change or every 1/4 second
 		if (self.dirty or now > self.last_update + 0.25):
@@ -1726,7 +1759,8 @@ class DualDisplay (ProgramBase):
 			self.preferred_image = None
 
 		# make sure any meaningful change in line position is registered as change
-		if (abs(self.line_pos - self.last_line_pos) > 0.1):
+		# cutoff value is ~ 1.0/800
+		if (abs(self.line_pos - self.last_line_pos) > 0.0015):
 			self.last_line_pos = self.line_pos
 			self.dirty = True
 
