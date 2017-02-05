@@ -25,7 +25,7 @@ _Adjust password via the `passwd` command._
 
 **via pip3 install:**
 - psutil
-- wifi
+- wifi (not used at the moment)
 
 **manual install:**
 - python-multitouch ([https://github.com/pimoroni/python-multitouch][1])
@@ -49,14 +49,24 @@ To add a new network, open the `wpa_supplicant` file.
 `sudo nano /etc/wpa_supplicant/wpa_supplicant.conf`
 Add the network as follows:
 	network={
-	ssid="The_ESSID"
-	psk="Your_wifi_password"
+	  ssid="The_ESSID"
+	  psk="Your_wifi_password"
 	}
 
 ### Using the [wifi module][5]
 Use `sudo wifi scan` to find available networks. With `sudo wifi list` it shows the stored networks.
 
 Connecting is done via `sudo wifi connect nickname SSID`. The SSID is optional and, if omitted, is guessed from the nickname.
+
+## Getting and setting date and time
+Like every Debian distort, get the time with just `date`. On boot, a RPi will attempt to use the network to set its date and time. When unavailable, it continues from the last known time. Setting is done as follows:
+	sudo date --set 1998-11-02 
+	sudo date --set 21:08:00
+
+## Serial connection
+Before the serial (UART) connection can be used, the default terminal setup on those ports needs to be disabled ([as per online info][6]). This can be done via `rasp-config` (Disable terminal over serial). Then in `/boot/config.txt`, set `enable_uart=1`.
+
+The default serial connection on a RPi3 is `/dev/ttyS0`. The LV-MaxSonar is connected to `3v3`, `GND`, `TX`, and `RX` [GPIO pins][7] (with the RX connected to TX on the other side and vice versa). Baud rate is 9600, with no parity, byte size of 8, and 1 stop bit. Because it runs in RS232 mode, not inverted RS232 as expected by UART, any binary signals need to be inverted.
 
 ## Development info
 Code has to be run on the RPi itself as the screen is available there, unless the code explicitly sets `os.environ[‘SDL_VIDEODRIVER’] = ‘fbcon’` at the start of the file. In that case the code can run remotely with appropriate privileges. Still, with pygame it’s hard to get proper tracebacks when exceptions occur. To ease this, exceptions are logged in `errors.log`. Using the `tail -f errors.log` command a developer can follow once errors get appended to the file. This can of course be done via another terminal, ssh, etc.
@@ -75,3 +85,5 @@ If all else fails, this will do:
 [3]:	https://github.com/linusg/rpi-backlight/blob/master/rpi_backlight.py
 [4]:	https://www.raspberrypi.org/documentation/configuration/wireless/wireless-cli.md
 [5]:	https://wifi.readthedocs.io/en/latest/wifi_command.html#tutorial
+[6]:	http://elinux.org/RPi_Serial_Connection
+[7]:	http://pinout.xyz/pinout/ground#
