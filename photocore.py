@@ -30,22 +30,66 @@ else:
 
 # ----- TODO ------------------------------------------------------------------
 """
-# PhotoSoup: map out functionality and interactivity
+# DualDisplay: give some rating feedback (pickers moving up or down, fading out)
 
-# enable serial connection and fetch distance data
+# PhotoSoup: make time to pass before adding images dependent on the number of images
+--- so few photos means quicker addition?
 
 # check data export and logging abilities
 --- any distance sensor judgements of watching/paying attention?
 
-# have a user-initiated on-screen exit procedure to shutdown device
-
 ----- BEFORE DEPLOYMENT ------
 - set rollover times to something reasonable, esp. for DualDisplay (20/3?)
 - set /lib/systemd/system/photocore.service to Restart=always
-- set is_debug = False
 - delete all photos, logfiles, etc
 
 """
+
+
+# ----- GLOBAL FUNCTIONS ------------------------------------------------------
+
+
+""" globally available logging code for debugging purposes """
+def logging (message):
+	with open('errors.log','a') as f:
+		t = time.strftime("%Y-%m-%d %H:%M:%S - ", time.localtime())
+		f.write(t + str(message) + '\n')
+
+""" calling this is the default way of making the script do its magic """
+def main ():
+	# define here so it's available later, also in case of exception handling
+	core = None
+	try:
+		# initialise all components
+		core = Photocore()
+
+		# program stays in this loop unless called for exit
+		while (True):
+			core.update()
+				
+			# exit flag set?
+			if (core.do_exit):
+				core.close()
+				break
+			else:
+				# pause between frames
+				pygame.time.wait(50)
+	except Exception as e:
+		with open('errors.log', 'a') as f:
+			traceback.print_exc(file=f)  #sys.stdout
+		# make a final attempt to close gracefully
+		if (core is not None):
+			core.close(1)
+	finally:
+		# if all else fails, quit pygame to get out of fullscreen
+		pygame.quit()
+
+		# trigger a system shutdown if requested
+		if (core.do_shutdown):
+			time.sleep(1)
+			os.system('sudo shutdown now')
+
+
 # ----- CLASSES ---------------------------------------------------------------
 
 
@@ -55,19 +99,28 @@ class Photocore ():
 		# systemd may send SIGHUP signals which, if unhandled, gets the process killed
 		signal.signal(signal.SIGHUP, self.handle_signal)
 
-		# init variables
+		# init variables to default values
 		self.do_exit      = False
-		self.is_debug     = True
+		self.do_shutdown  = False
+		self.is_debug     = False
+		self.use_import   = True
 		self.last_update  = 0
 		self.memory_usage = 0
 		self.memory_total = round(psutil.virtual_memory().total / (1024*1024))
+
+		# check for arguments passed in
+		for argument in sys.argv:
+			if (argument == '-debug'):
+				self.is_debug = True
+			elif (argument == '-noup'):
+				self.use_import = False
 
 		# initiate all subclasses
 		self.data     = DataManager(core=self)
 		self.network  = NetworkManager()
 		self.display  = DisplayManager()
 		self.distance = DistanceSensor()
-		self.images   = ImageManager('../images', '../uploads', core=self)
+		self.images   = ImageManager('../images', '../uploads', core=self, use_import=self.use_import)
 		self.gui      = GUI(core=self)
 		self.input    = InputHandler(core=self)
 		
@@ -76,6 +129,7 @@ class Photocore ():
 		self.program_active_index    = 1
 		self.program_preferred_index = 1
 		self.max_time_for_program    = time.time() + 30
+		self.switch_requested        = False
 		self.add_program('BlankScreen')
 		self.add_program('StatusProgram')
 		self.add_program('DualDisplay')
@@ -100,7 +154,7 @@ class Photocore ():
 			self.memory_usage = round(100 * (1 - (mem_available / self.memory_total) ))
 
 			# deal with potential memory leak of images not unloading after use
-			if (mem_available < 600):
+			if (mem_available < 500):
 				self.images.check_use()
 
 			self.last_update = now
@@ -113,18 +167,28 @@ class Photocore ():
 		self.input.update()
 		self.images.update()
 
-		# decide on active program
+		# decide on active program  - - - - - - - - - - - - - - - - -
+
+		# check if time is up for current program
 		if (now > self.max_time_for_program):
-			# first check if state has not been interactive for past minute (if so, don't switch)
+			# first check if state has not been interactive for past minute (if it was, don't switch)
 			if (self.input.get_last_touch() < now - 60):
-				# if time is up pick another program (but avoid blank or status programs)
+				self.switch_requested = True
+
+		# pick another program if a switch is desired (but no preference was indicated)
+		if (self.switch_requested):
+			# at night, stick with a blank screen
+			if (self.get_time_is_night() and self.program_active_index != 0):
+				self.program_preferred_index = 0
+			else:
+				# pick another program (but avoid blank or status programs)
 				# and make sure the new pick isn't similar to the current program
 				while True:
 					self.program_preferred_index = random.randint(2, len(self.programs))
 					if (self.program_preferred_index != self.program_active_index):
 						break
 
-		# switch over if necessary
+		# switch over if desired program does not match current
 		if (self.program_preferred_index != self.program_active_index):
 			switch_success = self.set_active(self.program_preferred_index)
 
@@ -132,12 +196,17 @@ class Photocore ():
 				# decide on the time the next program will be active
 				# uses the program's max time as a basis, with some added randomness [0.75, 1.25]
 				random_time = ((random.random() / 2) + 0.75) * self.get_active().get_max_time()
+				# at night, intervals are shorter (to be able to revert to rest sooner)
+				if (self.get_time_is_night()):
+					random_time /= 3
+
 				self.max_time_for_program = now + random_time
+				self.switch_requested = False
 			else:
 				# add another minute to time allowance to avoid trying once again on next loop
 				self.max_time_for_program += 60
 
-		# update active program
+		# update active program  - - - - - - - - - - - - - - - - -
 		self.programs[self.program_active_index].update()
 
 		# last, update GUI
@@ -145,7 +214,10 @@ class Photocore ():
 
 	def close (self, exit_code=0):
 		if (exit_code == 0):
-			self.data.log('Photocore closing.')
+			if (self.do_shutdown):
+				self.data.log('Photocore closing, device shutting down.')
+			else:
+				self.data.log('Photocore closing.')
 		else:
 			self.data.log('Photocore closing, with errors.')
 
@@ -161,6 +233,10 @@ class Photocore ():
 		self.distance.close()
 		self.display.close()
 		self.network.close()
+
+	def set_exit (self, shutdown=False):
+		self.do_exit     = True
+		self.do_shutdown = shutdown
 
 	""" handler that ignores system signals """
 	def handle_signal (self, signum, frame):
@@ -188,7 +264,7 @@ class Photocore ():
 				self.program_preferred_index = new_index
 				self.get_active().make_active()
 
-				self.data.log('Switching to program ' + self.get_active().__class__.__name__)
+				self.data.log('Switching to program ' + self.get_active().get_name())
 
 				return True
 			else:
@@ -205,7 +281,7 @@ class Photocore ():
 		program = globals()[name](core=self)
 
 		# check for any prior data
-		prior_data = self.data.get_program_match( program.__class__.__name__ )
+		prior_data = self.data.get_program_match( program.get_name() )
 		if (prior_data is not None):
 			program.set_shown(prior_data['shown'])
 
@@ -220,11 +296,15 @@ class Photocore ():
 
 		self.set_active(self.program_preferred_index)
 
+	def request_switch (self):
+		self.switch_requested = True
+
 	def get_images_count (self):
 		return self.images.get_count()
 
-	def set_exit (self, state=True):
-		self.do_exit = state
+	""" Returns timestamp of last user interaction """
+	def get_last_ix (self):
+		return self.input.get_last_touch()
 
 	def get_memory_usage (self):
 		return self.memory_usage
@@ -238,11 +318,21 @@ class Photocore ():
 	def set_display_brightness (self, brightness=100, user_initiated=False):
 		self.display.set_brightness(brightness, user_initiated)
 
+	""" Returns time as a string: 15:45:23  10 February 2017 """
 	def get_time (self):
-		return time.strftime("%H:%m:%S  %d %B %Y", time.localtime())
+		return time.strftime("%H:%M:%S  %d %B %Y", time.localtime())
 
-	def set_time (self):
-		pass
+	""" Returns time as a float between [0-24)"""
+	def get_time_24h (self):
+		tl = time.localtime()
+		return tl.tm_hour + tl.tm_min/60.0 + tl.tm_sec/3600.0
+
+	""" Returns False at night, True otherwise """
+	def get_time_is_night (self):
+		t = self.get_time_24h()
+		if (t > 0.5 and t < 6.0):  # 00.30 to 06.00
+			return True
+		return False
 
 	""" Returns disk space usage in percentage """
 	def get_disk_space (self):
@@ -282,6 +372,7 @@ class DataManager ():
 		self.min_time_between_saves  = 120  # avoid excessive writing to disk
 		self.min_time_between_export = 7200  # once every 2 hours
 
+		# os.uname().nodename
 		try:
 			with open('data.bin', 'rb') as f:
 				loaded_data = pickle.load(f)
@@ -305,7 +396,7 @@ class DataManager ():
 
 				# attempt to match
 				for item in self.data['programs']:
-					if (program.__class__.__name__ == item['name']):
+					if (program.get_name() == item['name']):
 						match = True
 						item['shown'] = program.shown
 
@@ -315,7 +406,7 @@ class DataManager ():
 				# else store a new item (that hopefully matches on future tries)
 				if (not match):
 					self.data['programs'].append({
-						'name': program.__class__.__name__,
+						'name': program.get_name(),
 						'shown': program.shown
 					})
 
@@ -364,11 +455,19 @@ class DataManager ():
 					t = time.strftime("%Y-%m-%d %H:%M:%S - ", time.localtime(ix['timestamp']))
 					f.write(t + ix['action'] + '; value: ' + str(ix['value']) + '\n')
 
-				f.write('\nIMAGES\n-----------------\n')
+				f.write('\nIMAGES ({}x)\n-----------------\n'.format(self.core.images.get_count()))
 				for img in self.data['images']:
 					f.write(str(img) + '\n')
 
 			self.last_export = time.time()
+
+			# also upload to external save
+			#self.save_external()
+
+	def save_external (self):
+		pass  # not implemented yet
+		# with open('data.log', 'r') as f:
+		# 	r = requests.post('http://www.sinds194.nl/upload/', files={'{0}_data.log'.format(os.uname().hostname): f})
 
 	def get_program_match (self, name):
 		for program in self.data['programs']:
@@ -665,10 +764,17 @@ class DistanceSensor ():
 	def map_value (self, value, inMin, inMax, outMin, outMax):
 		# Figure out how 'wide' each range is
 		inSpan = inMax - inMin
+		outSpan = outMax - outMin
+
+		# Convert the in range into a 0-1 range (float)
+		valueScaled = float(value - inMin) / float(inSpan)
+
+		# Convert the 0-1 range into a value in the out range.
+		return outMin + (valueScaled * outSpan)
 
 
 class ImageManager ():
-	def __init__ (self, image_folder='', upload_folder='', core=None):
+	def __init__ (self, image_folder='', upload_folder='', core=None, use_import=True):
 		self.core          = core
 		self.images        = []
 		self.recent        = []
@@ -676,47 +782,52 @@ class ImageManager ():
 		self.upload_folder = upload_folder
 
 		# for importer process
+		self.use_importer  = use_import
 		self.do_delete     = True
 		self.last_update   = 0
 
-		# start the importer process in another thread
-		self.scanner_queue = Queue()
-		self.process_queue = Queue()
-		self.process       = Process(target=self.run_importer)
-		self.process.start()
+		if (self.use_importer):
+			# start the importer process in another thread
+			self.scanner_queue = Queue()
+			self.process_queue = Queue()
+			self.process       = Process(target=self.run_importer)
+			self.process.start()
 
-		# also manage a simple webserver interface for image uploads
-		if (os.geteuid() == 0):  # with root access
-			self.upload_server = SimpleServer(debug=self.core.is_debug, port=80, use_signals=False, regular_run=False)
-		else:
-			self.upload_server = SimpleServer(debug=self.core.is_debug, use_signals=False, regular_run=False)
+			# also manage a simple webserver interface for image uploads
+			if (os.geteuid() == 0):  # with root access
+				self.upload_server = SimpleServer(debug=self.core.is_debug, port=80, use_signals=False, regular_run=False)
+			else:
+				self.upload_server = SimpleServer(debug=self.core.is_debug, use_signals=False, regular_run=False)
 
 		# load images
 		self.scan_folder(self.image_folder, 'append')
 
 	def update (self):
-		# check if scanner is triggered by importer process
-		try:
-			# get without blocking (as that wouldn't go anywhere)
-			# raises Empty if no items in queue
-			item = self.scanner_queue.get(block=False)
-			if (item is not None):
-				self.scan_folder(self.image_folder, 'append')
-		except QueueEmpty:
-			pass
+		if (self.use_importer):
+			# check if scanner is triggered by importer process
+			try:
+				# get without blocking (as that wouldn't go anywhere)
+				# raises Empty if no items in queue
+				item = self.scanner_queue.get(block=False)
+				if (item is not None):
+					additions = abs(self.get_count() - self.scan_folder(self.image_folder, 'append'))
+					self.core.data.log_action('images.scan', '+{0}, for a total of {1}'.format(additions, self.get_count()))
+			except QueueEmpty:
+				pass
 
 	def close (self):
 		self.check_use(0) # unload all images unused since now
 		self.images = []  # reset to severe memory links
 
-		# signal upload server to shutdown
-		self.upload_server.shutdown()
+		if (self.use_importer):
+			# signal upload server to shutdown
+			self.upload_server.shutdown()
 
-		# signal to process it should close
-		self.process_queue.put(True)
-		# wait until it does so
-		print('Signalled and waiting for importer to close...')
-		self.process.join()
+			# signal to process it should close
+			self.process_queue.put(True)
+			# wait until it does so
+			print('Signalled and waiting for importer to close...')
+			self.process.join()
 
 	""" Checks recent use of images, requests to unload those unused """
 	def check_use (self, seconds_ago=5):
@@ -885,37 +996,39 @@ class Image ():
 
 	def get (self, size, fill_box=False, fit_to_square=False, circular=False, smooth=True):
 		self.last_use = time.time()
+		size = (round(size[0]), round(size[1]))
 
 		# load if necessary
 		if (self.is_loaded is False):
 			self.load()
 
 		# check the required size and make it available
-		if (size[0] < self.size[0] or size[1] < self.size[1]):
-				# create unique identifier string for this size
-				size_string = str(size[0]) + 'x' + str(size[1])
-				if (circular):
-					size_string = size_string.replace('x','c')
-				elif (fit_to_square):
-					size_string = size_string.replace('x','s')
-				elif (fill_box):
-					size_string = size_string.replace('x','f')
+		# a request size >= image size is normally ignored, unless it has to be made circular
+		if (size[0] < self.size[0] or size[1] < self.size[1] or circular):
+			# create unique identifier string for this size
+			size_string = '{0}x{1}'.format(size[0], size[1])
+			if (circular):
+				size_string = size_string.replace('x','c')
+			elif (fit_to_square):
+				size_string = size_string.replace('x','s')
+			elif (fill_box):
+				size_string = size_string.replace('x','f')
 
-				# check if this resizing is cached already
-				if (size_string in self.image):
-					return self.image[size_string], size_string
+			# check if this resizing is cached already
+			if (size_string in self.image):
+				return self.image[size_string], size_string
+			else:
+				# scale and keep for future use
+				img = None
+				if (circular):
+					img = self.scale(size, fill_box=True, fit_to_square=True, smooth=smooth)
+					img = self.make_circular(img)
 				else:
-					# scale and keep for future use
-					img = None
-					if (circular):
-						img = self.scale(size, fill_box=True, fit_to_square=True, smooth=smooth)
-						img = self.make_circular(img)
-					else:
-						img = self.scale(size, fill_box, fit_to_square, smooth)
-					self.image[size_string] = img
-					return img, size_string
+					img = self.scale(size, fill_box, fit_to_square, smooth)
+				self.image[size_string] = img
+				return img, size_string
 		# without resize
-		return self.image['full'], size_string
+		return self.image['full'], 'full'
 
 	def load (self):
 		# load image
@@ -1023,8 +1136,6 @@ class Image ():
 				s_top    = (sy - sx) / 2
 			scaled_img = scaled_img.subsurface( Rect(s_left, s_top, s_width, s_height) )
 
-		#print((ix,iy), (bx,by), (sx,sy), scaled_img.get_size(), 'fill:'+str(fill_box), 'sq:'+str(fit_to_square))
-
 		return scaled_img
 
 	""" Returns a surface that is 'circular' (has a black background with image as circle in it) """
@@ -1038,6 +1149,18 @@ class Image ():
 		# draw white circle on top and set white color to transparent
 		pygame.draw.circle(surface, [255,255,255], (int(size[0]/2), int(size[1]/2)), int(min(size)/2), 0)
 		surface.set_colorkey([255,255,255])
+
+		# prepare image to avoid pure black parts being set to transparent on next step
+		grey_surface = pygame.Surface(size)
+		# fill it almost pure black
+		grey_surface.fill([1,1,1])
+		# draw image on top with pure black set to transparent
+		img.set_colorkey([0,0,0])
+		img_rect = img.get_rect()
+		img_rect.topleft = (0,0)
+		grey_surface.blit(img, img_rect)
+		img = grey_surface
+
 		# draw the black 'vignette' on top of the image, white parts won't overwrite original
 		surface_rect = surface.get_rect()
 		surface_rect.topleft = (0,0)
@@ -1055,7 +1178,6 @@ class Image ():
 			self.rate -= delta
 		# limit to [0,1] range
 		self.rate = max(min(self.rate, 1), -1)
-		#print('rate', self.file, self.rate, positive)
 
 		return self.rate
 
@@ -1072,7 +1194,7 @@ class Image ():
 
 	""" Gives a default str(this instance) output """
 	def __str__ (self):
-		return self.file + '; rate: ' + str(self.rate) + '; shown: ' + str(self.shown)
+		return '{0}; rate: {1:.2f}; shown: {2}'.format(self.file, self.rate, self.shown)
 
 
 class Vector4 ():
@@ -1089,7 +1211,7 @@ class Vector4 ():
 		return Vector4(self.x, self.y, self.z, self.w)
 
 	def __str__ (self):
-		return '(x: {0.x}, y: {0.y}, z: {0.z}, w: {0.w})'.format(self)
+		return '(x: {0.x}, y: {0.y}, z: {0.z:.2f}, w: {0.w:.2f})'.format(self)
 
 
 class InputHandler ():
@@ -1104,12 +1226,14 @@ class InputHandler ():
 		self.RELEASED_HOLD = 5
 		self.RELEASED_DRAG = 6
 
-		self.pos            = Vector4(0,0,0)  # x, y, timestamp
+		self.pos            = Vector4(0,0,0,0)  # x, y, timestamp, magnitude
+		self.last_pos       = Vector4(0,0,0,0)  # idem, for last time update() was called
 		self.state          = self.REST
-		self.drag           = []  # list of positions, empty if no drag active
-		self.last_touch     = 0   # timestamp of last time user touched the screen
-		self.t              = time.time  # use a reference to avoid issues in touch_handler
-		self.activity_start = 0   # timestamp to track length of interacting with device
+		self.drag           = []           # list of positions, empty if no drag active
+		self.last_touch     = time.time()  # timestamp of last time user touched the screen (set to now)
+		self.time_now       = time.time    # use a reference to avoid issues in touch_handler
+		self.activity_start = None         # timestamp to track length of interacting with device
+		#self.last_update    = 0            # timestamp of last time update() was called
 
 		# set up pygame events (block those of no interest to keep sanity/memory)
 		# types kept: QUIT, KEYDOWN, KEYUP, MOUSEMOTION, MOUSEBUTTONDOWN, MOUSEBUTTONUP
@@ -1143,6 +1267,11 @@ class InputHandler ():
 		now = time.time()
 
 		# handle touchscreen events
+
+		# for a mock run, get input another way
+		if (sys.platform == 'darwin'):
+			self.mock_touch_generator()
+
 		# if last touch event was long ago (> n seconds), set to resting state
 		if (self.last_touch < now - 0.25 and self.state != self.DRAGGING):
 			self.state = self.REST
@@ -1150,32 +1279,33 @@ class InputHandler ():
 			# begin activity tracking if not done yet
 			if (self.activity_start is None):
 				self.activity_start = now
+
+			# calculate magnitude in pixels (essentially distance covered since last update)
+			self.pos.w = sqrt(pow(self.last_pos.x - self.pos.x, 2) + pow(self.last_pos.y - self.pos.y, 2))
 		
 		# if no new activity is detected after n seconds, count the activity as over
 		if (self.activity_start is not None and self.last_touch < now - 15):
 			activity_length = self.last_touch - self.activity_start
 			# if significant/long enough, log this activity
 			if (activity_length > 2):
-				self.core.data.log_action('touches', int(activity_length))
+				self.core.data.log_action('touches', '{0} sec, in {1}'.format(int(activity_length), self.core.get_active().get_name()))
 			# reset tracker
 			self.activity_start = None
-
+			
 		# handle pygame event queue
 		events = pygame.event.get()
 
-		# for a mock run, get input another way
-		if (sys.platform == 'darwin'):
-			self.mock_touch_generator()
-			
-		# handle pygame events
 		for event in events:
 			if (event.type is QUIT):
-				self.core.set_exit(True)
+				self.core.set_exit()
 			elif (event.type is KEYDOWN):
 				if (event.key == K_ESCAPE):
-					self.core.set_exit(True)
+					self.core.set_exit()
 				elif (event.key >= 48 and event.key <= 57):
 					self.core.set_preferred(event.key - 48)  # adjust range [0-9]
+
+		# house keeping
+		self.last_pos = self.pos.copy()
 
 	def close (self):
 		self.ts.stop()
@@ -1222,11 +1352,11 @@ class InputHandler ():
 	""" this method is called as an event handler """
 	def touch_handler(self, event, touch):
 		# data in touch: touch.slot, touch.id (uniquem or -1 after release), touch.valid, touch.x, touch.y
-		self.last_touch = self.t()
+		self.last_touch = self.time_now()
 		
 		# to simplify matters, limit scope to slot 0 (that is, the first finger to touch screen)
 		if (touch.slot == 0):
-			self.pos.set(touch.x, touch.y, 0)
+			self.pos.set(touch.x, touch.y, self.last_touch, self.pos.w)
 			
 			if event == TS_PRESS:
 				# reset
@@ -1248,8 +1378,8 @@ class InputHandler ():
 				time     = 0
 
 				if (len(self.drag) > 1):
-					distance = sqrt(pow(self.drag[0].x - self.drag[len(self.drag)-1].x, 2) + pow(self.drag[0].y - self.drag[len(self.drag)-1].y, 2))
-					time     = self.drag[len(self.drag)-1].z - self.drag[0].z
+					distance = sqrt(pow(self.drag[0].x - self.drag[-1].x, 2) + pow(self.drag[0].y - self.drag[-1].y, 2))
+					time     = self.drag[-1].z - self.drag[0].z
 
 				# interpret the info
 				if (distance > 30):
@@ -1539,6 +1669,7 @@ class ProgramBase ():
 	def __init__ (self, core=None):
 		self.core         = core
 		self.gui          = core.gui
+		self.dsize        = core.gui.display_size
 		self.is_active    = False
 		self.active_since = time.time()
 		self.last_update  = 0  # seconds since epoch
@@ -1546,6 +1677,9 @@ class ProgramBase ():
 		self.first_run    = True
 		self.max_time     = 300  # in seconds
 		self.shown        = []   # list, each item denotes for how long program has been active
+
+	def get_name (self):
+		return self.__class__.__name__
 
 	""" any conditions that prevent this program from working should be checked prior to becoming active """
 	def can_run (self):
@@ -1602,7 +1736,13 @@ class ProgramBase ():
 
 class BlankScreen (ProgramBase):
 	def update (self):
-		pass  # do nothing (relies on GUI class providing a blank canvas on first run)
+		# if user touches screen, get active again (so prepare to leave blank screen)
+		# make sure this program gets some time to settle in (ignore input first n seconds)
+		if (self.active_since < time.time() - 3 and self.core.input.state > self.core.input.REST):
+			self.core.request_switch()
+
+		# generally, do nothing (relies on GUI class providing a blank canvas on first run)
+		pass
 
 
 class StatusProgram (ProgramBase):
@@ -1625,6 +1765,12 @@ class StatusProgram (ProgramBase):
 				value = round(100 * max(min((self.core.input.pos.x - 350) / 440, 1), 0))
 				self.core.set_display_brightness(value, True)
 
+		# also check for button presses
+		if (self.core.input.state == self.core.input.RELEASED_HOLD):
+			# check for power button
+			if (self.core.input.drag[0].x > 750 and self.core.input.drag[0].y < 50):
+				self.core.set_exit(shutdown=True)
+
 		# update on change or every 1/4 second
 		if (self.dirty or now > self.last_update + 0.25):
 			super().update()  # this calls for update
@@ -1645,12 +1791,12 @@ class StatusProgram (ProgramBase):
 		# storage (% available/used)
 		self.gui.draw_text("Disk space",  o='left', x=150, y=175)
 		self.gui.draw_slider(o='left', x=350, y=197, w=450, h=5, r=(self.core.get_disk_space() / 100.0), bg='good')
-		self.gui.draw_text(str(self.core.get_disk_space()) + "%",         o='left', x=350, y=175)
+		self.gui.draw_text(str(self.core.get_disk_space()) + "%",   o='left', x=350, y=175)
 
 		# memory usage
 		self.gui.draw_text("Memory usage", o='left', x=150, y=230)
 		self.gui.draw_slider(o='left', x=350, y=252, w=450, h=5, r=(self.core.get_memory_usage() / 100.0), bg='good')
-		self.gui.draw_text(str(self.core.get_memory_usage()) + "%",   o='left', x=350, y=230)
+		self.gui.draw_text(str(self.core.get_memory_usage()) + "%", o='left', x=350, y=230)
 		
 		# display brightness
 		self.gui.draw_text("Display brightness", o='left', x=150, y=285)
@@ -1669,13 +1815,18 @@ class StatusProgram (ProgramBase):
 		self.gui.draw_text("Temperature", o='left', x=150, y=450)
 		self.gui.draw_text(str(self.core.get_temperature()) + "ºC", o='left', x=350, y=450)
 
+		# power off button
+		self.gui.draw_circle(x=776, y=24, rad=16, r=False)
+		self.gui.draw_circle(x=776, y=24, rad=13, c='background', r=False)
+		self.gui.draw_rectangle(x=776, y=8,  w=10, h=30, c='background', r=False)
+		self.gui.draw_rectangle(x=776, y=12, w=4,  h=12, c='support', r=False)
 
 class DualDisplay (ProgramBase):
 	def __init__ (self, core=None):
 		super().__init__(core)
 		
-		self.default_time    = 10
-		self.switch_time     = 2
+		self.default_time    = 20
+		self.switch_time     = 3
 		self.max_time        = 3.5 * 3600  # n hours
 
 		self.im = [
@@ -1979,18 +2130,32 @@ class PhotoSoup (ProgramBase):
 	def __init__ (self, core=None):
 		super().__init__(core)
 
-		self.max_time  = 3.5 * 3600  # n hours
+		self.max_time             = 3.5 * 3600  # n hours
 
-		self.base_size = 0.3
-		self.goal_num  = 10
-		self.images    = []
+		self.base_constant        = 1
+		self.base_size            = 1
+		self.goal_num_images      = 3    # starting value
+		self.max_num_images       = 11   # max value
+		self.min_num_images       = 2    # minimum value
+		self.last_image_addition  = 0    # timestamp
+		self.time_to_pass_sans_ix = 600  # was 20, ideal 1200
+		self.time_before_addition = 900  # was 30, ideal 1800
+		self.images               = []
+		self.active_image         = None
+		self.center               = Vector4(0.5*self.dsize[0], 0.5*self.dsize[1], 0, 0)
+
+	def can_run (self):
+		if (not self.core.get_images_count() > 20):
+			return False
+		return True
 
 	def update (self):
 		now = time.time()
 
-		# TEMP
-		first=True
+		# determine base factor - - - - - - - - - - - - - - - - - - -
 
+		# base factor is dependent on the number of images that have entered view
+		# it will only increase significantly once images are reduced
 		"""
 		GUIDELINE:
 		.8 ~  3 images
@@ -1998,38 +2163,126 @@ class PhotoSoup (ProgramBase):
 		.4 ~  9 images
 		.3 ~ 11 images
 		"""
+		# image factor --- simple linear relation to approximate guide values
+		# use a minimum number of images of one, to avoid divide by zero
+		self.base_constant = 2.3 / max(len(self.images),1) + 0.1
 
-		# adjust base size (depends on distance, interactivity)
-		self.base_size = max(min(-0.36 * self.core.get_distance() + 0.93, 0.7), 0.3)
+		# time factor --- base factor gets smaller as the time since the last interaction gets longer
+		# uses the formula 60/x - 1, with outcome limited to [-1,0.5]
+		# (although lower limit of formula only approaches -1)
+		self.base_constant += 0.15 * min(max(60.0 / (now - self.core.get_last_ix()) - 1, -0.7), 0.5)
 
-		# adjust goal number of images (depends on base size)
-		self.goal_num = round(max(min(5.7 * self.core.get_distance() - 0.4, 11), 3))
+		# distance factor --- base factor gets increased with low distance
+		# uses the formula -.8*x + 1.2, with limits [0, 0.5]
+		self.base_constant += 0.3 * min(max(-0.8 * self.core.get_distance() + 1.2, 0), 0.5)
+
+		# adjust base size (rescale from base factor, with limits to avoid sizing errors)
+		new_size = min(max(0.8 * self.base_constant, 0.1), 2)
+		# this line makes sure the base size gradually moves from one value to another
+		self.base_size = self.base_size + 0.2 * (new_size - self.base_size)
+
+		# adjust goal number of images (depends on time since last interaction)
+		# also, this won't be done if user interaction was recent
+		if (self.core.get_last_ix() < now - self.time_to_pass_sans_ix and self.last_image_addition < now - self.time_before_addition):
+			# add one, but have an upper limit
+			self.goal_num_images = min(self.goal_num_images + 1, self.max_num_images)
+
+		# handle user interactivity - - - - - - - - - - - - - - - - -
+		
+		if (self.core.input.DRAGGING <= self.core.input.state < self.core.input.RELEASED):
+			if (self.active_image is None):
+				# 1. check if dragging started over image
+				# find image closest to drag position
+				closest_distance = 9999  # very high number that's sure to be met
+				closest_image    = None
+				for i in self.images:
+					distance = self.get_distance(self.core.input.pos, i['v'])
+					# if closest so far and distance < image radius, we have a match
+					if (distance < closest_distance and distance < self.get_diameter(i)/2.0):
+						closest_distance = distance
+						closest_image    = i
+
+				if (closest_image is not None):
+					self.active_image = closest_image
+					self.active_image['user_control'] = True
+					self.active_image['user_last_ix'] = now
+
+					# also put this image to the end of the images list, so it gets drawn on top
+					swapIndex = self.images.index(self.active_image)
+					self.images[-1], self.images[swapIndex] = self.images[swapIndex], self.images[-1]
+			else:
+				# so we already have an active image
+				self.active_image['user_last_ix'] = now
+
+				# 2. pull the center of that image towards user position (image follows touch)
+				# set angle towards touch position
+				self.active_image['v'].z = self.get_angle(self.active_image['v'], self.core.input.pos)
+				# set speed to recent touch movement magnitude
+				self.active_image['v'].w = self.core.input.pos.w
+			
+		elif (self.core.input.state >= self.core.input.RELEASED):
+			if (self.active_image is not None):
+				# 3. once drag is released, let angle and trajectory be the same as recent trajectory
+				# ^ so don't update here
+				self.active_image['user_control'] = False
+				self.active_image = None
+		
+		# image updates below - - - - - - - - - - - - - - - - - - - -
 
 		# if goal has increased, add an image slot
-		if (self.goal_num > len(self.images)):
+		if (self.goal_num_images > len(self.images)):
 			self.images.append({
-				'image': None,
-				'since': now,
-				'v'    : Vector4(0, 0, 0, 0),
-				'size' : 1
+				'image'       : None,
+				'since'       : now,
+				'v'           : Vector4(0, 0, 0, 0),
+				'size'        : 1,
+				'user_control': False,  # False
+				'user_last_ix': 0       # timestamp of last interaction
 			})
+			# keep track of time
+			self.last_image_addition = now
 
+		# do per image updating
 		for i in self.images:
 			# if new or moved out of screen range, renew
-			if (i['image'] is None or i['v'].x < -50 or i['v'].x > 850 or i['v'].y < -50 or i['v'].y > 530):
-				if (self.goal_num >= len(self.images)):
+			if (i['image'] is None or not self.is_on_sceen(i)):
+				if (self.goal_num_images >= len(self.images)):
 					# cleanup if possible
 					if (i['image'] is not None):
 						i['image'].unload( i['since'] )  # report time since it appeared
-					
-					# renew this image slot
-					i['image'] = self.core.images.get_next()
-					i['since'] = now
-					i['v'].set(
-						random.random() * self.core.gui.display_size[0],
-						random.random() * self.core.gui.display_size[1],
-						2 * pi * random.random(),
-						max(1.3 * random.random(), 0.15))
+
+					# a regular, non-user-touched image will just disappear and be renewed
+					# an image that was recently touched (< n seconds ago) will disappear without replacement
+					if (now - i['user_last_ix'] < 10):
+						# avoid replacement by reducing desired number of images
+						self.goal_num_images = max(self.goal_num_images - 1, self.min_num_images)
+						
+						# also rate this image down
+						i['image'].do_rate(False, 0.1)
+
+						# to maintain balance, the other images currently visible get uprated slightly
+						uprating = 0.1 / (len(self.images) - 1)
+						for other_img in self.images:
+							if (other_img is not i):
+								other_img['image'].do_rate(True, uprating)
+
+						# log this action
+						self.core.data.log_action('ps.flung', '{0}, amid {1} images'.format(i['image'].file, len(self.images)))
+
+						# remove this image slot (mimics code below)
+						i['image'].unload( i['since'] )  # report time since it appeared
+						self.images.remove(i)
+
+					else:
+						# renew this image slot
+						i['image'] = self.core.images.get_next()
+						i['since'] = now
+						# set x, y, direction, speed
+						i['v'].set(
+							random.random() * self.dsize[0],
+							random.random() * self.dsize[1],
+							2 * pi * random.random(),
+							max(1.3 * random.random(), 0.15))
 				else:
 					# remove this image slot to free memory
 					i['image'].unload( i['since'] )  # report time since it appeared
@@ -2039,45 +2292,53 @@ class PhotoSoup (ProgramBase):
 			# else, update the current image's position, size, etc.
 			else:
 				# adjust the size
-				i['size'] = 1 + (i['image'].rate / 5)  # potential range is thus [0.8, 1.2]
+				i['size'] = 1 + (i['image'].rate / 4.0)  # potential range is thus [0.75, 1.25]
 
-				# adjust speed (magnitude, i['v'].w)
+				# non-user-controlled images update based on relative position to other images
+				if (not i['user_control']):
+					# adjust angle if far from center (aim to pull it in to avoid images huddling at edge)
+					# this is primarily a problem with large images ~ a small number
+					if (len(self.images) <= 4):
+						# get angle towards the center of screen
+						center_angle    = self.get_angle(i['v'], self.center)
+						# distance from center -> factor of the current angle's adjustment to the center angle
+						center_distance = self.get_distance(i['v'], self.center)
+						# only continue to adjust if distance is close to edge
+						if (center_distance > 0.9 * self.dsize[1]):
+							# factor is limited to .01 to avoid abrupt changes
+							center_factor   = min(max(1.0 * center_distance / self.dsize[1], 0), 0.01)
+							# update the angle accordingly
+							i['v'].z = (1 - center_factor) * i['v'].z + center_factor * center_angle
 
-				# adjust position (may depend on size, so comes later)
-
-				# calculate the base vector for this image (with magnitude w, angle z)
+				# for all images, calculate the base vector (with magnitude w, angle z)
 				vi_x = i['v'].w * cos(i['v'].z)
 				vi_y = i['v'].w * sin(i['v'].z) * -1  # -1 because -y is up
 
-				"""
-				each other image has influence, through attraction Fa and repulsion Fr
-				those two forces are from x,y towards the other x,y with radian angle ß and -ß
-				so the sum of the two forces influence the default force """
-				for img in self.images:
-					if (img is not i):
-						# calculate influence
-						f = self.get_force_attraction(i, img) - self.get_force_repulsion(i, img)
-						a = self.get_angle(i, img)
+				# calculate influence of other images
+				if (not i['user_control']):
+					"""
+					each other image has influence, through attraction Fa and repulsion Fr
+					those two forces are from x,y towards the other x,y with radian angle ß and -ß
+					so the sum of the two forces influence the default force
+					"""
+					for img in self.images:
+						if (img is not i):
+							# calculate influence
+							f = self.get_force_attraction(i, img) - self.get_force_repulsion(i, img)
+							a = self.get_angle(i['v'], img['v'])
 
-						# add this vector to the base
-						vi_x += f * cos(a)
-						vi_y += f * sin(a) * -1
-						#print(round(vi_x), round(vi_y), f, a)
+							# add this vector to the base
+							vi_x += f * cos(a)
+							vi_y += f * sin(a) * -1
+							#print(round(vi_x), round(vi_y), f, a)
 
-				# add the resultant vector to get the new position
+				# for all, add the resultant vector to get the new position
 				#print('3', vi_x, vi_y)
 				i['v'].x += vi_x
 				i['v'].y += vi_y
 
 				if (vi_x != 0 or vi_y != 0):
 					self.dirty = True
-
-			# TEMP
-			if first:
-				#print(i['v'].x, i['v'].y)
-				first=False
-
-		#self.dirty = True
 
 		# indicate update is necessary, if so, always do full to avoid glitches
 		if (self.dirty):
@@ -2091,70 +2352,48 @@ class PhotoSoup (ProgramBase):
 		self.images = []
 		super().make_inactive()
 
+	def is_on_sceen (self, a):
+		arad = 0.5 * self.get_diameter(a)
+		if (a['v'].x + arad < 0 or a['v'].x - arad > self.dsize[0] or a['v'].y + arad < 0 or a['v'].y - arad > self.dsize[1]):
+			return False
+		return True
+
 	def get_angle (self, a, b):
-		dx = b['v'].x - a['v'].x
-		dy = a['v'].y - b['v'].y
+		dx = b.x - a.x
+		dy = a.y - b.y
 		return atan2(dy, dx)
 
 	def get_distance (self, a, b):
-		return sqrt(pow(b['v'].x - a['v'].x,2) + pow(a['v'].y - b['v'].y ,2))
+		return sqrt(pow(b.x - a.x,2) + pow(a.y - b.y ,2))
+
+	def get_diameter (self, a):
+		return a['size'] * self.base_size * self.dsize[1]
 
 	def get_force_attraction (self, a, b):
-		# TODO increase/reduce attraction based on image rating
-		return 0.0001 * self.get_distance(a, b)
+		return 0.0001 * self.get_distance(a['v'], b['v'])
 
 	def get_force_repulsion (self, a, b):
-		distance = self.get_distance(a, b)
+		distance = self.get_distance(a['v'], b['v'])
 		# substract sum of radii in pixels, so distance is calculated for closest edges
-		distance -= (a['size'] + b['size'] * self.base_size * self.core.gui.display_size[1])
+		distance -= (self.get_diameter(a) + self.get_diameter(b)) / 2.0
 		
-		# avoid divide by zero problems
-		if (distance < 0.01):
-			distance = 0.01
+		# avoid divide by zero problems (and very small distances, thus large forces)
+		if (distance < 0.05):
+			distance = 0.05
 
+		# force is inversely related to distance
 		return 0.005 / pow(distance, 2)
 
 	def draw (self):
 		for i in self.images:
-			xpos = i['v'].x / self.core.gui.display_size[0]
-			ypos = i['v'].y / self.core.gui.display_size[1]
-			size = i['size'] * self.base_size * self.core.gui.display_size[1]
+			xpos = i['v'].x / self.dsize[0]
+			ypos = i['v'].y / self.dsize[1]
+			size = self.get_diameter(i)
 			self.gui.draw_image(i['image'], pos=(xpos, ypos), size=(size, size), rs=False, ci=True)
 
 
-# ----- MAIN ------------------------------------------------------------------
-
-""" globally available logging code """
-def logging (message):
-	with open('errors.log','a') as f:
-		t = time.strftime("%Y-%m-%d %H:%M:%S - ", time.localtime())
-		f.write(t + str(message) + '\n')
+# ----- RUN AS MAIN ------------------------------------------------------------
 
 """ Unless this script is imported, do the following """
 if __name__ == '__main__':
-	# define here so it's available later, also in case of exception handling
-	core = None
-	try:
-		# initialise all components
-		core = Photocore()
-
-		# program stays in this loop unless called for exit
-		while (True):
-			core.update()
-				
-			# exit flag set?
-			if (core.do_exit):
-				core.close()
-				break
-			else:
-				# pause between frames
-				pygame.time.wait(50)
-	except Exception as e:
-		with open('errors.log', 'a') as f:
-			traceback.print_exc(file=f)  #sys.stdout
-		# make a final attempt to close gracefully
-		if (core is not None):
-			core.close(1)
-	finally:
-		# if all else fails, quit pygame to get out of fullscreen
-		pygame.quit()
+	main()
