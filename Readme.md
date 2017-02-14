@@ -15,17 +15,16 @@ _Adjust password via the `passwd` command._
 
 ## Dependencies to install
 **via apt-get install:**
-- git
 - libjpeg-dev
 - python3-dev
 - python3-setuptools
-- python3-serial
+- python3-serial (not used in final version)
+- python3-rpi.gpio
 - python3-pygame
 - python3-pip
 
 **via pip3 install:**
 - psutil
-- wifi (not used at the moment)
 
 **manual install:**
 - python-multitouch ([https://github.com/pimoroni/python-multitouch][1])
@@ -64,6 +63,7 @@ Like every Debian distort, get the time with just `date`. On boot, a RPi will at
 	sudo date --set 21:08:00
 
 ## Serial connection
+_Note: not used in final version._
 Before the serial (UART) connection can be used, the default terminal setup on those ports needs to be disabled ([as per online info][6]). This can be done via `rasp-config` (Disable terminal over serial). Then in `/boot/config.txt`, set `enable_uart=1`.
 
 The default serial connection on a RPi3 is `/dev/ttyS0`. The LV-MaxSonar is connected to `3v3`, `GND`, `TX`, and `RX` [GPIO pins][7] (with the RX connected to TX on the other side and vice versa). Baud rate is 9600, with no parity, byte size of 8, and 1 stop bit. Because it runs in RS232 mode, not inverted RS232 as expected by UART, any binary signals need to be inverted.

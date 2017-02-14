@@ -12,7 +12,6 @@ import pygame
 from pygame.locals import *
 from queue import Empty as QueueEmpty
 import random
-import serial
 import signal
 import sys
 import time
@@ -23,6 +22,7 @@ if (sys.platform == 'darwin'):
 	# simulate touches by masquerading pointer movements and clicks
 	from mocking import Touchscreen, Touch, TS_PRESS, TS_RELEASE, TS_MOVE
 else:
+	import RPi.GPIO as GPIO
 	from ft5406 import Touchscreen, TS_PRESS, TS_RELEASE, TS_MOVE
 	# set display explicitly to allow starting this script via SSH with output on Pi display
 	# not necessary otherwise. requires running with sudo on the remote terminal.
@@ -539,29 +539,34 @@ class DisplayManager ():
 
 class DistanceSensor ():
 	def __init__ (self):
-		self.distance = 6.5  # in meters
+		self.distance = 2  # in meters
 		self.distance_direction = True  # True if >, False if <
 		
-		# setup serial connection
-		self.use_serial = False
+		# setup  connection
+		self.use_sensor = True
+		if (sys.platform == 'darwin'):
+			self.use_sensor = False
 
-		# start the serial connection process in another thread
-		if (self.use_serial):
+		# start the input measurement process in another thread
+		if (self.use_sensor):
 			self.sensor_queue  = Queue()
 			self.process_queue = Queue()
-			self.process       = Process(target=self.run_serial)
+			self.process       = Process(target=self.run_sensor_input)
 			self.process.start()
 
 	""" Read distance sensor data over serial connection """
 	def update (self):
-		if (self.use_serial):
-			# check if scanner is triggered by importer process
+		if (self.use_sensor):
+			# check if sensor measurement process has left a new reading
 			try:
 				# get without blocking (as that wouldn't go anywhere)
 				# raises Empty if no items in queue
-				item = self.sensor_queue.get(block=False)
-				if (item is not None):
-					self.distance = item
+
+				# get all items to avoid delays (as items are put in faster than handled here)
+				while not self.sensor_queue.empty():
+					item = self.sensor_queue.get(block=False)
+					if (item is not None):
+						self.distance = item
 			except QueueEmpty:
 				pass
 		else:
@@ -579,30 +584,32 @@ class DistanceSensor ():
 
 	def close (self):
 		# close serial connection
-		if (self.use_serial):
+		if (self.use_sensor):
 			# signal to process it should close
 			self.process_queue.put(True)
 			# wait until it does so
-			print('Signalled and waiting for serial connection to close...')
+			print('Signalled and waiting for sensor process to close...')
 			self.process.join()
 
 	""" Returns distance in meters """
 	def get (self):
 		return self.distance
 
-	""" This function is run as a separate process to avoid locking due to a serial connection """
-	def run_serial (self):
-		# initiate serial connection
-		try:
-			self.connection          = serial.Serial()
-			self.connection.port     = '/dev/tty'
-			self.connection.baudrate = 9600
-			self.connection.timeout  = 1
-			if (sys.platform != 'darwin'):
-				self.connection.open()
-			print('Serial: on ' + self.connection.name)  # check actual port used
-		except:
-			print('Serial: no serial connection')
+	""" This function is run as a separate process to avoid locking due to GPIO polling """
+	def run_sensor_input (self):
+		# setup variables
+		distance = 2  # in meters
+
+		# parameters for the low pass filter
+		# As k decreases, the low pass filter resolution improves but the bandwidth decreases.
+		acc = 0.5   # starting value
+		k   = 0.005  # default is .01
+
+		# initiate GPIO input
+		GPIO.setmode(GPIO.BCM)  # choose BCM or BOARD numbering schemes
+		# set pin to input
+		input_pin = 16  # outer row, 3rd from USB ports
+		GPIO.setup(input_pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
 		# run this while loop forever, unless a signal tells otherwise
 		while (True):
@@ -617,28 +624,47 @@ class DistanceSensor ():
 				except QueueEmpty:
 					pass
 
-				# useful code
-				# if incoming bytes are waiting to be read from the serial input buffer
-				if (self.connection.is_open and self.connection.inWaiting()>0):
-					# read the bytes and convert from binary array to ASCII
-					data_str = self.connection.read(self.connection.in_waiting).decode('ascii')
-					# print the incoming string without putting a new-line ('\n') automatically after every print()
-					print(data_str, end='')
+				# useful code - - - - - - - - - - - - - - - - - - - - - - - - -
 
-					# parse data
+				""" no analog or hardware PWM readings are possible on a RPi3.
+					However, we can undersample the PWM signal and take an average,
+					assuming we hit low and high measurements in a proportion approximating
+					the true PWM high/low proportion. This is undersampling so requires
+					averaging out over a period of time to get stable readings.
+				"""
+
+				# read from input
+				x = int(GPIO.input(input_pin))  # 1 or 0
+
+				# apply IIR low pass filter (undersampling, so it requires an average)
+				acc += k * (x - acc)
+
+				# convert from [0.1] to a value in meters
+				""" LV-MaxSonar data
+					PW: This pin outputs a pulse width representation of range.
+					The distance can be calculated using the scale factor of 147uS per inch.
+					PWM range is (0.88, 37.5) in mS
+				"""
+				distance = self.map_value(acc, 0, 1, 0.88, 37.5) / 0.147 * 2.51 / 100.0
 				
-					# update self.distance to new reading (moving average)
-					self.sensor_queue.put(distance)
+				#print('PWM: {0:.2f}\t\tDistance: {1:.2f}m'.format(acc, distance))
+
+				# send the new measure to queue
+				self.sensor_queue.put(distance)
 
 				# wait until next round
-				time.sleep(0.2)
+				time.sleep(0.02)
 			# ignore any key input (handled by main thread)
 			except KeyboardInterrupt:
 				pass
 
 		# finally, after exiting while loop, it ends here
-		#print('Terminating serial process')
-		self.connection.close()
+		#print('Terminating sensor measurement process')
+		GPIO.cleanup()
+
+	def map_value (self, value, inMin, inMax, outMin, outMax):
+		# Figure out how 'wide' each range is
+		inSpan = inMax - inMin
 
 
 class ImageManager ():
