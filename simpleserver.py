@@ -239,7 +239,9 @@ class ResponseHandler (BaseHTTPRequestHandler):
 		if (self.path == '/upload'):
 			path = path.replace('/phototype/upload','/uploads')
 		
-		filename = os.path.join(path, filename[0])
+		# filename gets -part added to its name, which is removed upon completion
+		# this avoids other processes potentially using a non-complete file
+		filename = os.path.join(path, filename[0] + '-part')
 		line = self.rfile.readline()
 		remaining_bytes -= len(line)
 		line = self.rfile.readline()
@@ -261,6 +263,11 @@ class ResponseHandler (BaseHTTPRequestHandler):
 					pre_line = pre_line[0:-1]
 				out.write(pre_line)
 				out.close()
+
+				# correct file by removing -part
+				os.rename(filename, filename.replace('-part',''))
+
+
 				return (True, "File '%s' upload success!" % filename)
 			else:
 				out.write(pre_line)

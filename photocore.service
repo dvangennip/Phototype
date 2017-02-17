@@ -14,6 +14,7 @@ Type=idle
 User=root
 WorkingDirectory=/home/pi/phototype
 ExecStart=/usr/bin/python3 /home/pi/phototype/photocore.py
+#RestartSec=5
 #Restart=always
 # Restart=no (no is the default), set a delay for restart with RestartSec=20
 

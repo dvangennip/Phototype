@@ -7,12 +7,16 @@ from math import sqrt, pi, cos, sin, atan2
 from multiprocessing import Process, Queue
 import os
 import pickle
+from PIL import Image as PIL_Image, ExifTags
 import psutil
 import pygame
 from pygame.locals import *
 from queue import Empty as QueueEmpty
 import random
+import requests
+from shutil import chown
 import signal
+from socket import gethostname
 import sys
 import time
 import traceback
@@ -32,25 +36,20 @@ else:
 """
 # DualDisplay: give some rating feedback (pickers moving up or down, fading out)
 
-# PhotoSoup: make time to pass before adding images dependent on the number of images
---- so few photos means quicker addition?
-
 # check data export and logging abilities
 --- any distance sensor judgements of watching/paying attention?
 
 ----- BEFORE DEPLOYMENT ------
-- set rollover times to something reasonable, esp. for DualDisplay (20/3?)
-- set /lib/systemd/system/photocore.service to Restart=always
 - delete all photos, logfiles, etc
 
 """
-
-
 # ----- GLOBAL FUNCTIONS ------------------------------------------------------
 
+version = 6
 
 """ globally available logging code for debugging purposes """
 def logging (message):
+	print(message)
 	with open('errors.log','a') as f:
 		t = time.strftime("%Y-%m-%d %H:%M:%S - ", time.localtime())
 		f.write(t + str(message) + '\n')
@@ -97,13 +96,15 @@ class Photocore ():
 	def __init__ (self):
 		# prepare for a systemd-initiated run
 		# systemd may send SIGHUP signals which, if unhandled, gets the process killed
-		signal.signal(signal.SIGHUP, self.handle_signal)
+		signal.signal(signal.SIGHUP,  self.handle_signal)
+		signal.signal(signal.SIGTSTP, self.handle_signal)  # Stop (^Z)
+		signal.signal(signal.SIGINT,  self.handle_signal)  # Interrupt (^C)
 
 		# init variables to default values
 		self.do_exit      = False
 		self.do_shutdown  = False
 		self.is_debug     = False
-		self.use_import   = True
+		self.use_network  = True   # can any web, import, or update services be run?
 		self.last_update  = 0
 		self.memory_usage = 0
 		self.memory_total = round(psutil.virtual_memory().total / (1024*1024))
@@ -112,15 +113,16 @@ class Photocore ():
 		for argument in sys.argv:
 			if (argument == '-debug'):
 				self.is_debug = True
-			elif (argument == '-noup'):
-				self.use_import = False
+			elif (argument == '-nonet'):
+				self.use_network = False
 
 		# initiate all subclasses
 		self.data     = DataManager(core=self)
 		self.network  = NetworkManager()
+		self.updater  = SelfUpdater(core=self, use_updater=self.use_network)
 		self.display  = DisplayManager()
 		self.distance = DistanceSensor()
-		self.images   = ImageManager('../images', '../uploads', core=self, use_import=self.use_import)
+		self.images   = ImageManager('../images', '../uploads', core=self, use_import=self.use_network)
 		self.gui      = GUI(core=self)
 		self.input    = InputHandler(core=self)
 		
@@ -162,6 +164,7 @@ class Photocore ():
 		# update all subclasses
 		self.data.update()
 		self.network.update()
+		self.updater.update()
 		self.display.update()
 		self.distance.update()
 		self.input.update()
@@ -181,10 +184,10 @@ class Photocore ():
 			if (self.get_time_is_night() and self.program_active_index != 0):
 				self.program_preferred_index = 0
 			else:
-				# pick another program (but avoid blank or status programs)
+				# pick another program (but avoid blank or status programs, so index >= 2)
 				# and make sure the new pick isn't similar to the current program
 				while True:
-					self.program_preferred_index = random.randint(2, len(self.programs))
+					self.program_preferred_index = random.randint(2, len(self.programs) - 1)
 					if (self.program_preferred_index != self.program_active_index):
 						break
 
@@ -227,6 +230,7 @@ class Photocore ():
 
 		# close subclasses
 		self.data.close()
+		self.updater.close()
 		self.gui.close()
 		self.images.close()
 		self.input.close()
@@ -238,9 +242,10 @@ class Photocore ():
 		self.do_exit     = True
 		self.do_shutdown = shutdown
 
-	""" handler that ignores system signals """
+	""" handler for system signals """
 	def handle_signal (self, signum, frame):
-		pass
+		if (signum == signal.SIGTSTP or signum == signal.SIGINT):
+			self.set_exit()
 
 	""" Returns reference to active program """
 	def get_active (self):
@@ -294,7 +299,7 @@ class Photocore ():
 		if (self.program_preferred_index >= len(self.programs)):
 			self.program_preferred_index = 0
 
-		self.set_active(self.program_preferred_index)
+		#self.set_active(self.program_preferred_index)
 
 	def request_switch (self):
 		self.switch_requested = True
@@ -355,6 +360,134 @@ class Photocore ():
 
 	def get_network_state (self):
 		return self.network.get_state_summary()
+
+""" SelfUpdater looks online for newer versions of this code and replaces itself with such a file.
+	Upon a restart the new code should be used, establishing a simple update mechanism. """
+class SelfUpdater ():
+	def __init__ (self, core=None, use_updater=True):
+		self.core            = core
+		self.use_updater     = use_updater
+		self.update_interval = 7200  # in seconds, how often does it check for updates?
+		self.last_update     = time.time() - self.update_interval + 10  # allow the code to start before 1st update
+
+		if (self.use_updater):
+			# start the importer process in another thread
+			self.updater_queue = Queue()
+			self.process_queue = Queue()
+			self.process       = Process(target=self.run_updater)
+			self.process.start()
+
+	def update (self):
+		if (self.use_updater):
+			# check if updater is triggered by importer process
+			try:
+				# get without blocking (as that wouldn't go anywhere)
+				# raises Empty if no items in queue
+				item = self.updater_queue.get(block=False)
+				if (item is not None):
+					# call for exit to trigger a restart
+					# (relies on a systemd service that restarts this code upon closing)
+					self.core.set_exit()
+			except QueueEmpty:
+				pass
+
+	def close (self):
+		if (self.use_updater):
+			# signal to process it should close
+			self.process_queue.put(True)
+			# wait until it does so
+			print('Signalled and waiting for self-updater to close...')
+			self.process.join()
+
+	""" This is the code that the updater background process will run """
+	def run_updater (self):
+		while (True):
+			try:
+				# first, check if this process received a request to stop
+				try:
+					# get without blocking (as that wouldn't go anywhere)
+					# raises Empty if no items in queue
+					item = self.process_queue.get(block=False)
+					if (item is not None):
+						break
+				except QueueEmpty:
+					pass
+
+				# check for updates to this code - - - - - - - - - -
+
+				if (self.core.network.is_connected()):
+					if (self.last_update < time.time() - self.update_interval):
+						if (self.core.is_debug):
+							print('Updater: looking for a newer version...')
+
+						# do a request for a file with version number current + 1
+						online_path = 'http://project.sinds1984.nl/phototype/'
+						path        = 'photocore_v{0}.py'.format(version+1)
+						r = requests.get(online_path + path, stream=True)
+
+						# if successful, store the response as a file with the same name
+						if (r.status_code == 200):
+							success = False
+							
+							with open(path, 'wb') as f:
+								r.raw.decode_content = True
+								f.write(r.raw.read())
+								success = True
+
+							if (success):
+								success = False  # assume the worst, again
+
+								# check integrity of the file
+								file_hash = 'something'
+								checksum  = 'different'
+								with open(path) as file_to_check:
+									data = file_to_check.read()    
+									file_hash = md5(data.encode('utf-8')).hexdigest()
+
+								# get checksum
+								rc = requests.get(online_path + path.replace('.py', '_checksum.txt'), stream=True)
+								if (rc.status_code == 200):
+									rc.raw.decode_content = True
+									checksum = rc.raw.read().decode('utf-8')
+
+									#print(file_hash, checksum)
+									if (file_hash == checksum):
+										success = True
+							
+							if (success):
+								try:
+									# if saving is also successful, set the proper privileges
+									chown(path, user='pi', group='pi')
+									os.chmod(path, 0o777)  # pass as octal
+									
+									# rename current photocore.py to photocore_vX.py, as a backup
+									os.rename('photocore.py', 'photocore_v{0}.py'.format(version))
+									# rename the new file to photocore.py, effectively replacing it
+									os.replace(path, 'photocore.py')
+
+									# log the successful update
+									self.core.data.log('Updated photocore to version {0}.'.format(version+1))
+									# notify main thread of successful update (should trigger a restart)
+									self.updater_queue.put(True)
+								except Exception as e:
+									logging(e)
+						else:
+							if (self.core.is_debug):
+								print('Updater: no new version found at this time.')
+
+						# update the time
+						self.last_update = time.time()
+
+				# end of useful code - - - - - - - - - - - - - - - -
+
+				# wait until next round (keep short to enable quick shutdown)
+				time.sleep(3)
+			# ignore any key input (handled by main thread)
+			except KeyboardInterrupt:
+				pass
+
+		# finally, after exiting while loop, it ends here
+		#print('Terminating updater process')
 
 
 class DataManager ():
@@ -487,6 +620,7 @@ class DataManager ():
 
 class NetworkManager ():
 	def __init__ (self):
+		self.last_update = 0
 		self.net_types = ('eth0','wlan0')
 		if (sys.platform == 'darwin'):
 			self.net_types = ('en0','en1')
@@ -505,9 +639,9 @@ class NetworkManager ():
 		}
 
 	def update (self, regular=True):
-		if (regular):
-			pass  # no need to update all the time
-		else:
+		now = time.time()
+
+		if (not regular or self.last_update < now - 30):
 			# update network state
 			net_state = psutil.net_if_addrs()
 
@@ -522,6 +656,8 @@ class NetworkManager ():
 					self.state[net]['connected'] = False
 					self.state[net]['ip']        = ''
 
+			self.last_update = now
+
 	def close (self):
 		pass
 
@@ -533,9 +669,14 @@ class NetworkManager ():
 	def connect (self, wifi_network=None):
 		pass
 
+	""" Returns True if any network is up and running, False if none are """
 	def is_connected (self):
-		if (self.state[self.net_types[0]]['connected'] or self.state[self.net_types[1]]['connected']):
-			return True
+		# note: uses direct stats from psutil, as a call from another process has no
+		#       access to live state info after it starts.
+		state = psutil.net_if_stats()
+		for net in self.net_types:
+			if (state[net].isup):
+				return True
 		return False
 
 	def get_state_summary (self):
@@ -708,6 +849,8 @@ class DistanceSensor ():
 		GPIO.setmode(GPIO.BCM)  # choose BCM or BOARD numbering schemes
 		# set pin to input
 		input_pin = 16  # outer row, 3rd from USB ports
+		if (gethostname() == 'protopi4'):
+			input_pin = 12  # pin 16 broke off for this one :'(
 		GPIO.setup(input_pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
 		# run this while loop forever, unless a signal tells otherwise
@@ -848,7 +991,7 @@ class ImageManager ():
 
 			# check all filenames, act on valid ones
 			for filename in filenames:
-				if filename.endswith(('.jpg', '.jpeg')):
+				if filename.lower().endswith(('.jpg', '.jpeg')):
 					if (call == 'append'):
 						self.append(dirname, filename)
 					elif (call == 'check_and_resize'):
@@ -963,7 +1106,7 @@ class ImageManager ():
 		else:
 			# use photocore's Image class for resizing and saving
 			p = Image(in_file_path)
-			surface, size_string = p.get((800,480), fill_box=True)
+			surface, size_string = p.get((800,480), fill_box=True, remove_black=True, check_orientation=True)
 			print('Resizing: ', in_file_path, surface.get_size())
 			result = p.save_to_file(size_string, out_file_path)
 
@@ -994,12 +1137,20 @@ class Image ():
 		self.rate      = rate   # default is 0, range is [-1, 1]
 		self.shown     = list(shown)  # list, each item denotes for how long image has been shown
 
-	def get (self, size, fill_box=False, fit_to_square=False, circular=False, smooth=True):
+	def get (self, size, fill_box=False, fit_to_square=False, circular=False, smooth=True, remove_black=False, check_orientation=False):
 		self.last_use = time.time()
-		size = (round(size[0]), round(size[1]))
+		size        = (round(size[0]), round(size[1]))
+		size_string = 'full'
+
+		# if orientation needs checking, do it here before regular loading
+		# as any changes are done to base file
+		if (check_orientation):
+			if (self.is_loaded):
+				self.unload()
+			self.correct_orientation()
 
 		# load if necessary
-		if (self.is_loaded is False):
+		if (not self.is_loaded):
 			self.load()
 
 		# check the required size and make it available
@@ -1015,9 +1166,8 @@ class Image ():
 				size_string = size_string.replace('x','f')
 
 			# check if this resizing is cached already
-			if (size_string in self.image):
-				return self.image[size_string], size_string
-			else:
+			# if so, ready to return that
+			if (not size_string in self.image):
 				# scale and keep for future use
 				img = None
 				if (circular):
@@ -1026,9 +1176,13 @@ class Image ():
 				else:
 					img = self.scale(size, fill_box, fit_to_square, smooth)
 				self.image[size_string] = img
-				return img, size_string
-		# without resize
-		return self.image['full'], 'full'
+				# ready to return now
+
+		# if pure blacks need to be removed, do it here after rescaling (smaller file = quicker)
+		if (remove_black):
+			self.image[size_string] = self.remove_pure_black(self.image[size_string])
+
+		return self.image[size_string], size_string
 
 	def load (self):
 		# load image
@@ -1150,17 +1304,6 @@ class Image ():
 		pygame.draw.circle(surface, [255,255,255], (int(size[0]/2), int(size[1]/2)), int(min(size)/2), 0)
 		surface.set_colorkey([255,255,255])
 
-		# prepare image to avoid pure black parts being set to transparent on next step
-		grey_surface = pygame.Surface(size)
-		# fill it almost pure black
-		grey_surface.fill([1,1,1])
-		# draw image on top with pure black set to transparent
-		img.set_colorkey([0,0,0])
-		img_rect = img.get_rect()
-		img_rect.topleft = (0,0)
-		grey_surface.blit(img, img_rect)
-		img = grey_surface
-
 		# draw the black 'vignette' on top of the image, white parts won't overwrite original
 		surface_rect = surface.get_rect()
 		surface_rect.topleft = (0,0)
@@ -1169,6 +1312,44 @@ class Image ():
 		img.set_colorkey([0,0,0])
 
 		return img
+
+	""" Prepare image to avoid pure black parts being set to transparent elsewhere.
+		This should only be done when files are first imported to reduce computation later on. """
+	def remove_pure_black (self, img):
+		size = img.get_size()
+		grey_surface = pygame.Surface(size)
+		# get a surface and fill it almost pure black
+		grey_surface.fill([1,1,1])
+		# draw image on top with pure black set to transparent
+		img.set_colorkey([0,0,0])
+		img_rect = img.get_rect()
+		img_rect.topleft = (0,0)
+		grey_surface.blit(img, img_rect)
+		img = grey_surface
+		# all pure black pixels have now been replaced with almost black
+		return img
+
+	""" Opens a file, checks it orientation and rotates appropriately, saves, and closes.
+		This should only be done when files are first imported, as it's unnecessary later. """
+	def correct_orientation (self):
+		try:
+			image = PIL_Image.open(self.file)
+			for orientation in ExifTags.TAGS.keys():
+				if ExifTags.TAGS[orientation]=='Orientation':
+					break
+			exif = dict(image._getexif().items())
+
+			if exif[orientation] == 3:
+				image = image.rotate(180, expand=True)
+			elif exif[orientation] == 6:
+				image = image.rotate(270, expand=True)
+			elif exif[orientation] == 8:
+				image = image.rotate(90, expand=True)
+			image.save(self.file)
+			image.close()
+		except (AttributeError, KeyError, IndexError):
+			# cases: image don't have getexif
+			pass
 
 	""" Up or downvotes an image """
 	def do_rate (self, positive=True, delta=0.2):
@@ -1409,7 +1590,8 @@ class GUI ():
 			'foreground': pygame.Color(255, 255, 255),  # white
 			'background': pygame.Color(  0,   0,   0),  # black
 			'support'   : pygame.Color(255,   0,   0),  # red
-			'good'      : pygame.Color(  0, 180,  25)   # green
+			'good'      : pygame.Color(  0, 180,  25),  # green
+			'subtle'    : pygame.Color( 90,  90,  90)   # grey
 		}
 
 		pygame.init()
@@ -1675,7 +1857,7 @@ class ProgramBase ():
 		self.last_update  = 0  # seconds since epoch
 		self.dirty        = True
 		self.first_run    = True
-		self.max_time     = 300  # in seconds
+		self.max_time     = 60   # in seconds
 		self.shown        = []   # list, each item denotes for how long program has been active
 
 	def get_name (self):
@@ -1738,7 +1920,7 @@ class BlankScreen (ProgramBase):
 	def update (self):
 		# if user touches screen, get active again (so prepare to leave blank screen)
 		# make sure this program gets some time to settle in (ignore input first n seconds)
-		if (self.active_since < time.time() - 3 and self.core.input.state > self.core.input.REST):
+		if (self.active_since < time.time() - 10 and self.core.input.state > self.core.input.REST):
 			self.core.request_switch()
 
 		# generally, do nothing (relies on GUI class providing a blank canvas on first run)
@@ -1770,6 +1952,9 @@ class StatusProgram (ProgramBase):
 			# check for power button
 			if (self.core.input.drag[0].x > 750 and self.core.input.drag[0].y < 50):
 				self.core.set_exit(shutdown=True)
+			# version number doubles as secret exit core button
+			elif (self.core.input.drag[0].x < 30 and self.core.input.drag[0].y > 450):
+				self.core.set_exit()
 
 		# update on change or every 1/4 second
 		if (self.dirty or now > self.last_update + 0.25):
@@ -1821,12 +2006,15 @@ class StatusProgram (ProgramBase):
 		self.gui.draw_rectangle(x=776, y=8,  w=10, h=30, c='background', r=False)
 		self.gui.draw_rectangle(x=776, y=12, w=4,  h=12, c='support', r=False)
 
+		# version
+		self.gui.draw_text("v{0}".format(version), o='left', x=5, y=460, fg='subtle')
+
 class DualDisplay (ProgramBase):
 	def __init__ (self, core=None):
 		super().__init__(core)
 		
-		self.default_time    = 20
-		self.switch_time     = 3
+		self.default_time    = 30
+		self.switch_time     = 4
 		self.max_time        = 3.5 * 3600  # n hours
 
 		self.im = [
@@ -2138,8 +2326,8 @@ class PhotoSoup (ProgramBase):
 		self.max_num_images       = 11   # max value
 		self.min_num_images       = 2    # minimum value
 		self.last_image_addition  = 0    # timestamp
-		self.time_to_pass_sans_ix = 600  # was 20, ideal 1200
-		self.time_before_addition = 900  # was 30, ideal 1800
+		self.time_to_pass_sans_ix = 900  # was 20, ideal 1200
+		self.time_before_addition = 1800 # was 30, ideal 1800
 		self.images               = []
 		self.active_image         = None
 		self.center               = Vector4(0.5*self.dsize[0], 0.5*self.dsize[1], 0, 0)
