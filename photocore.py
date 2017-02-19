@@ -45,7 +45,7 @@ else:
 """
 # ----- GLOBAL FUNCTIONS ------------------------------------------------------
 
-version = 6
+version = 7
 
 """ globally available logging code for debugging purposes """
 def logging (message):
@@ -56,6 +56,11 @@ def logging (message):
 
 """ calling this is the default way of making the script do its magic """
 def main ():
+	# first check if start is not blocked
+	if (os.path.exists('nostart.txt')):
+		print('Lock file present, will not start photocore.')
+		exit(0)
+		
 	# define here so it's available later, also in case of exception handling
 	core = None
 	try:
@@ -686,7 +691,7 @@ class NetworkManager ():
 		# generate a one line summary
 		summary = ''
 		if (self.state[self.net_types[1]]['connected']):
-			summary = summary + "WiFi ({0[network]}, {0[ip]})".format(self.state[self.net_types[1]])
+			summary = summary + "WiFi ({0[ip]})".format(self.state[self.net_types[1]])
 		else:
 			summary = summary + "WiFi (unconnected)"
 		if (self.state[self.net_types[0]]['connected']):
