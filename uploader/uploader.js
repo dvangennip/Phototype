@@ -7,7 +7,25 @@
 var Uploader = {};
 
 Uploader.init = function () {
-	Uploader.dropNotification = document.getElementById('drop_notification');
+	if (Dropzone && Dropzone.instances[0]) {
+		// adjust some settings on Dropzone instance
+		Dropzone.instances[0].options.acceptedFiles = 'image/jpeg';
+		Dropzone.instances[0].options.parallelUploads = 1; // requests active at the same time
+		Dropzone.instances[0].options.maxFilesize = 20;    // in MB
+
+		// set events on Dropzone instance
+		Dropzone.instances[0].on("success", function (file) {
+			Uploader.onUploadSuccess();
+		});
+		Dropzone.instances[0].on("complete", function (file) {
+			this.removeFile(file);
+		});
+	}
+
+	// get elements
+	Uploader.uploadCounter         = 0;
+	Uploader.uploadCounterFeedback = document.getElementById('upload_counter')
+	Uploader.dropNotification      = document.getElementById('drop_notification');
 
 	// set styles
 	Uploader.dropNotification.style.display = 'none';
@@ -18,6 +36,11 @@ Uploader.init = function () {
     window.addEventListener('dragleave', Uploader.onSourceFileDrag, false);
     window.addEventListener('dragend',   Uploader.onSourceFileDrag, false);
 	window.addEventListener('drop',      Uploader.onSourceFileDrop, false);
+};
+
+Uploader.onUploadSuccess = function () {
+	Uploader.uploadCounter++;
+	Uploader.uploadCounterFeedback.innerHTML = Uploader.uploadCounter + ' already done!';
 };
 
 Uploader.onSourceFileDrag = function (inEvent) {
