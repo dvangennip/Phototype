@@ -63,6 +63,9 @@ Use `sudo wifi scan` to find available networks. With `sudo wifi list` it shows 
 
 Connecting is done via `sudo wifi connect nickname SSID`. The SSID is optional and, if omitted, is guessed from the nickname.
 
+## Bluetooth
+This is not used, so it can be disabled via the `bluetoothctl` tool. Use the command `power off` to reduce power usage.
+
 ## Getting and setting date and time
 Like every Debian distribution, get the time with just `date`. On boot, a RPi will attempt to use the network to set its date and time. When unavailable, it continues from the last known time. Setting is done as follows:
 	sudo date --set 1998-11-02 
@@ -78,6 +81,9 @@ The default serial connection on a RPi3 is `/dev/ttyS0`. The LV-MaxSonar is conn
 Make sure auto-login is enabled via `raspi-config`. This boots the device straight to the terminal. Second, copy the `photo core.service` file to `/lib/systemd/system/photocore.service`. Its owner should be `root` and the permissions should be adjusted to 644 (rw-r-r) using `chmod`. The permissions of the python script (`photocore.py`) also need to be adjusted to allow  the code to run with the necessary privileges. Set it to 777 (rwx-rwx-rwx), owner can remain `pi`.
 
 Use `sudo systemctl enable|disable|start|stop|status photocore.service` to get the service going. After enabling and before starting, it’s necessary to call `sudo systemctl daemon-reload` first. A reboot may be necessary to check proper operation.
+
+## Low voltage warnings
+With less capable power adapters, the Pi may indicate that voltage drops below 4.65V with a lightning icon in the top-right of the screen. These warnings can be disabled by adding `avoid_warnings=1` to `/boot/config.txt`. Low voltage may still put the device at risk of data corruption.
 
 ## Development info
 Code has to be run on the RPi itself as the screen is available there, unless the code explicitly sets `os.environ[‘SDL_VIDEODRIVER’] = ‘fbcon’` before any code uses the screen (e.g., before `pygame.init()`). In that case the code can run remotely with appropriate privileges. Still, with pygame it’s hard to get proper tracebacks when exceptions occur. To ease this, exceptions are logged in `errors.log`. Using the `tail -f errors.log` command a developer can follow once errors get appended to the file. This can of course be done via another terminal, ssh, etc.
