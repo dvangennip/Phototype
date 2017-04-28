@@ -1,6 +1,16 @@
 # Phototype code
 This code turns a Raspberry Pi into a suitable platform for my prototype photo viewing system (a.k.a. phototype). For testing, it may also run on macOS with the relevant python modules installed.
 
+## Potential improvements to be made in future revisions
+- Uploading photos:
+	- Webpage URL should be more user-friendly: use some reverse look-up system to overcome IP issues, such that people can use a human-readable website URL.
+	- Allow uploads of specific images to be cancelled (this is probably just a matter of setting a flag in the Dropzone.js configuration).
+	- The webpage may already reduce the file size before uploading, significantly reducing upload time. Ideally, all resizing is done browsers-side to capitalise on the additional processing power.
+- Turning on and off should be more straightforward.
+- Implement a dropdown status screen, similar to smartphones.
+- Redo the way the distance sensor is read. It is currently imprecise and slow, so it falls short of its intended use.
+	- If it works better, the effects of its use can be stronger.
+
 ## Prototypes on RPi3 info
 I used Raspberry Pi 3 systems but it could equally work on other hardware. Additional hardware used includes a Pi 7” Touchscreen with a proprietary way of reading touch input, so that may not translate well to other systems without changes.
 
@@ -15,7 +25,7 @@ Hostname: protopi1, protopi2, etc.
 Adjust password via the `passwd` command. Hostname can be set via the `raspi-config` tool.
 
 ## Basic settings
-Go through `raspi-config` options. First, make sure all disk space can be used. Auto-login should be enabled after setting a device name and password.
+Go through `raspi-config` options. First, make sure all disk space can be used. Auto-login should be enabled after setting a device name and password. SSH needs to be enabled as well.
 
 ## Dependencies to install
 **via apt-get install:**
@@ -57,8 +67,10 @@ Add the network as follows:
 	  psk="Your_wifi_password"
 	}
 
+Status can be checked using `sudo wpa_cli status`.
+
 ### Using the [wifi module][8]
-_Not installed in final version._
+_Note: not installed in final version._
 Use `sudo wifi scan` to find available networks. With `sudo wifi list` it shows the stored networks.
 
 Connecting is done via `sudo wifi connect nickname SSID`. The SSID is optional and, if omitted, is guessed from the nickname.
