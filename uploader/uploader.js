@@ -9,9 +9,10 @@ var Uploader = {};
 Uploader.init = function () {
 	if (Dropzone && Dropzone.instances[0]) {
 		// adjust some settings on Dropzone instance
-		Dropzone.instances[0].options.acceptedFiles = 'image/jpeg';
-		Dropzone.instances[0].options.parallelUploads = 1; // requests active at the same time
-		Dropzone.instances[0].options.maxFilesize = 20;    // in MB
+		Dropzone.instances[0].options.addRemoveLinks  = true; // gives option to remove files from queue
+		Dropzone.instances[0].options.acceptedFiles   = 'image/jpeg'; // MIME type
+		Dropzone.instances[0].options.parallelUploads = 1;    // requests active at the same time
+		Dropzone.instances[0].options.maxFilesize     = 20;   // in MB
 
 		// set events on Dropzone instance
 		Dropzone.instances[0].on("success", function (file) {
