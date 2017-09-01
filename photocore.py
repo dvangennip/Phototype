@@ -520,6 +520,8 @@ class DataManager ():
 						self.data[key] = loaded_data[key]
 		except IOError as eio:
 			pass  # called when file doesn't exist (yet), which is fine
+		except EOFError as eof:
+			pass  # called when file exists but is empty
 		except Exception as e:
 			raise e
 
@@ -575,7 +577,7 @@ class DataManager ():
 	def save (self, export=False):
 		# regular save
 		with open('data.bin', 'wb') as f:
-			pickle.dump(self.data, f)
+			#pickle.dump(self.data, f)
 			self.last_save = time.time()
 
 		# export to human-readable file
@@ -1490,6 +1492,8 @@ class InputHandler ():
 					self.core.set_exit()
 				elif (event.key >= 48 and event.key <= 57):
 					self.core.set_preferred(event.key - 48)  # adjust range [0-9]
+				elif (event.key == K_s):
+					self.core.gui.save_screen()
 
 		# house keeping
 		self.last_pos = self.pos.copy()
@@ -1591,6 +1595,7 @@ class GUI ():
 		self.dirty_full   = True  # True if FULL display should be refreshed
 		self.dirty_areas  = []    # partial display updates can indicate pygame rectangles to redraw
 		self.display_size = (800,480)
+		self.screenshot_counter = 0
 
 		self.colors = {
 			'foreground': pygame.Color(255, 255, 255),  # white
@@ -1851,6 +1856,12 @@ class GUI ():
 		# set flags
 		self.dirty = True
 		self.dirty_areas.append(affected_rect)
+
+	def save_screen (self):
+		while (os.path.exists(str(self.screenshot_counter) + '.png')):
+			self.screenshot_counter += 1
+		
+		pygame.image.save(self.screen, str(self.screenshot_counter) + '.png')
 
 
 class ProgramBase ():
@@ -2332,8 +2343,8 @@ class PhotoSoup (ProgramBase):
 		self.max_num_images       = 11   # max value
 		self.min_num_images       = 2    # minimum value
 		self.last_image_addition  = 0    # timestamp
-		self.time_to_pass_sans_ix = 900  # was 20, ideal 1200
-		self.time_before_addition = 1800 # was 30, ideal 1800
+		self.time_to_pass_sans_ix = 20  # was 20, ideal 900
+		self.time_before_addition = 30 # was 30, ideal 1800
 		self.images               = []
 		self.active_image         = None
 		self.center               = Vector4(0.5*self.dsize[0], 0.5*self.dsize[1], 0, 0)

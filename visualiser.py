@@ -129,16 +129,18 @@ class DataVisualiser ():
 			# store the max interactions number for future scaling purposes
 			self.data['counts']['max_interactions'] = max_interactions
 
-			# export the data to another pickled binary
-			# exclude peculiar classes first to ease import elsewhere
+			# use a simpler data structure for image data
 			for img in self.data['images']:
 				self.data['images_simple'].append({
 					'file': img.file,
 					'rate': img.rate
 				})
+			self.data['images_simple'] = sorted(self.data['images_simple'], key=lambda k: k['rate'])
+
+			# exclude peculiar classes first to ease import elsewhere
 			del self.data['images']
 
-
+			# export the data to another pickled binary
 			# export with protocol v2 for compatibility with python 2
 			with open(data_path.replace('.bin','_processed.bin'), 'wb') as f:
 				pickle.dump(self.data, f, protocol=2)

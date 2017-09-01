@@ -6,3 +6,4 @@
 *.bin
 
 versions/*
+.DS_Store
