@@ -4,6 +4,7 @@
 *.log
 
 *.bin
-
-versions/*
+phototype/__pycache__
+images/*
+phototype/versions/*
 .DS_Store
