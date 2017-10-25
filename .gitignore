@@ -5,6 +5,6 @@
 
 *.bin
 phototype/__pycache__
-images/*
-phototype/versions/*
+images/*.jpg
+phototype/versions/*.py
 .DS_Store
