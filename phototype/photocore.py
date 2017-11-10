@@ -577,7 +577,7 @@ class DataManager ():
 	def save (self, export=False):
 		# regular save
 		with open('data.bin', 'wb') as f:
-			#pickle.dump(self.data, f)
+			pickle.dump(self.data, f)
 			self.last_save = time.time()
 
 		# export to human-readable file
@@ -2030,8 +2030,8 @@ class DualDisplay (ProgramBase):
 	def __init__ (self, core=None):
 		super().__init__(core)
 		
-		self.default_time    = 30
-		self.switch_time     = 4
+		self.default_time    = 30  # seconds before switching to next photo
+		self.switch_time     = 4   # seconds taken to switch between photos
 		self.max_time        = 3.5 * 3600  # n hours
 
 		self.im = [
@@ -2343,8 +2343,8 @@ class PhotoSoup (ProgramBase):
 		self.max_num_images       = 11   # max value
 		self.min_num_images       = 2    # minimum value
 		self.last_image_addition  = 0    # timestamp
-		self.time_to_pass_sans_ix = 20  # was 20, ideal 900
-		self.time_before_addition = 30 # was 30, ideal 1800
+		self.time_to_pass_sans_ix = 900  # test 20, ideal 900
+		self.time_before_addition = 1800 # test 30, ideal 1800
 		self.images               = []
 		self.active_image         = None
 		self.center               = Vector4(0.5*self.dsize[0], 0.5*self.dsize[1], 0, 0)
