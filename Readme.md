@@ -9,11 +9,16 @@ For the Phototypes I handed out to participants, a custom shell was 3D printed t
 
 Phototype runs a web server to allow the upload of photos via a user’s web browser. Initial configuration has to be done on the Pi itself, afterwards it should need little attention.
 
+## License
+The source code and models are available under a [CC-BY-NC 3.0 license][13]. You are free to share, copy and redistribute the material in any medium or format, and to adapt it for other uses. However, you must give credit and cannot use the code and materials for commercial purposes.
+
+Note that DropzoneJS files are included in this repository for convenience but remain under the original MIT license.
+
 ## Known issues and possible improvements for future revisions
 - Uploading photos:
 	- Webpage URL should be more user-friendly: use some reverse look-up system to overcome IP issues, such that people can use a human-readable website URL.
 	- Allow uploads of specific images to be cancelled (needs some optimisation in Dropzone.js).
-	- The webpage may already reduce the file size before uploading, significantly reducing upload time. Ideally, all resizing is done browser-side to capitalise on the additional processing power available. Check [https://github.com/nodeca/pica][2].
+	- The webpage may already reduce the file size before uploading, significantly reducing upload time. Ideally, all resizing is done browser-side to capitalise on the additional processing power available. Check [https://github.com/nodeca/pica][2]. Dropzone also seems to have gained abilities in this regard in more recent versions.
 - Turning on and off should be more straightforward (currently relies on a hidden button in the bottom-left corner of the status screen).
 - Implement a dropdown status screen, similar to iOS and Android smartphones. Thus should ease management by users.
 - Redo the way the distance sensor is read. It is currently imprecise and slow, so it falls short of its intended use. If it works better, the effects of its use can be stronger.
@@ -132,5 +137,6 @@ If all else fails, this will do:
 [10]:	https://wifi.readthedocs.io/en/latest/wifi_command.html#tutorial
 [11]:	http://elinux.org/RPi_Serial_Connection
 [12]:	http://pinout.xyz/pinout/ground#
+[13]:	https://creativecommons.org/licenses/by-nc/3.0/au/
 
 [image-1]:	phototype-overview.png
