@@ -8,3 +8,4 @@ phototype/__pycache__
 images/*.jpg
 phototype/versions/*
 .DS_Store
+login-info.md

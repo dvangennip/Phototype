@@ -30,8 +30,8 @@ Developed on Raspbian Jessie Lite ([use the latest image][3]). After install, up
 
 ## Login
 Username: pi
-Password: proto-one, proto-two, etc.
-Hostname: protopi1, protopi2, etc.
+Password: (omitted)
+Hostname: (omitted)
 
 Adjust password via the `passwd` command. Hostname can be set via the `raspi-config` tool.
 

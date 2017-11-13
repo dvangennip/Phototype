@@ -46,7 +46,7 @@ else:
 """
 # ----- GLOBAL FUNCTIONS ------------------------------------------------------
 
-version = 7
+version = 8
 
 """ globally available logging code for debugging purposes """
 def logging (message):
@@ -179,16 +179,20 @@ class Photocore ():
 		# decide on active program  - - - - - - - - - - - - - - - - -
 
 		# check if time is up for current program
-		if (now > self.max_time_for_program):
-			# first check if state has not been interactive for past minute (if it was, don't switch)
+		# or, if at night, see if program has been active for some time before forcing a switch
+		if (now > self.max_time_for_program or (self.get_active().get_active_time() > 600 and self.get_time_is_night()) ):
+			# first check if state has not been interactive for past minute (if it was, don't switch yet)
 			if (self.input.get_last_touch() < now - 60):
 				self.switch_requested = True
 
 		# pick another program if a switch is desired (but no preference was indicated)
 		if (self.switch_requested):
 			# at night, stick with a blank screen
-			if (self.get_time_is_night() and self.program_active_index != 0):
-				self.program_preferred_index = 0
+			if (self.get_time_is_night()):
+				if (self.program_active_index == 0):
+					pass  # do nothing, remain in night mode
+				else:
+					self.program_preferred_index = 0
 			else:
 				# pick another program (but avoid blank or status programs, so index >= 2)
 				# and make sure the new pick isn't similar to the current program
@@ -341,7 +345,7 @@ class Photocore ():
 	""" Returns False at night, True otherwise """
 	def get_time_is_night (self):
 		t = self.get_time_24h()
-		if (t > 0.5 and t < 6.0):  # 00.30 to 06.00
+		if (t < 6.0):  # 00.30 to 06.00
 			return True
 		return False
 
@@ -1929,6 +1933,10 @@ class ProgramBase ():
 	def get_max_time (self):
 		return self.max_time
 
+	### returns the time this program has been active
+	def get_active_time (self):
+		return time.time() - self.active_since
+
 	def set_shown (self, shown=[]):
 		self.shown = list(shown)  # list() avoids referencing to inbound list object
 
@@ -2032,7 +2040,7 @@ class DualDisplay (ProgramBase):
 		
 		self.default_time    = 30  # seconds before switching to next photo
 		self.switch_time     = 4   # seconds taken to switch between photos
-		self.max_time        = 3.5 * 3600  # n hours
+		self.max_time        = 3.0 * 3600  # n hours
 
 		self.im = [
 			{  # one
@@ -2335,13 +2343,13 @@ class PhotoSoup (ProgramBase):
 	def __init__ (self, core=None):
 		super().__init__(core)
 
-		self.max_time             = 3.5 * 3600  # n hours
+		self.max_time             = 3.0 * 3600  # n hours
 
 		self.base_constant        = 1
 		self.base_size            = 1
-		self.goal_num_images      = 3    # starting value
-		self.max_num_images       = 11   # max value
-		self.min_num_images       = 2    # minimum value
+		self.goal_num_images      = 3    # starting number of images shown on-screen
+		self.max_num_images       = 7    # max number of images shown on-screen
+		self.min_num_images       = 2    # minimum number of images shown on-screen
 		self.last_image_addition  = 0    # timestamp
 		self.time_to_pass_sans_ix = 900  # test 20, ideal 900
 		self.time_before_addition = 1800 # test 30, ideal 1800
