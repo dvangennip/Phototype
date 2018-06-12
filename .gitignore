@@ -9,3 +9,4 @@ images/*.jpg
 phototype/versions/*
 .DS_Store
 login-info.md
+*.vlw

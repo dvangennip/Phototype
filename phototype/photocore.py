@@ -40,13 +40,10 @@ else:
 # check data export and logging abilities
 --- any distance sensor judgements of watching/paying attention?
 
------ BEFORE DEPLOYMENT ------
-- delete all photos, logfiles, etc
-
 """
 # ----- GLOBAL FUNCTIONS ------------------------------------------------------
 
-version = 8
+version = 9
 
 """ globally available logging code for debugging purposes """
 def logging (message):
@@ -345,7 +342,7 @@ class Photocore ():
 	""" Returns False at night, True otherwise """
 	def get_time_is_night (self):
 		t = self.get_time_24h()
-		if (t < 6.0):  # 00.30 to 06.00
+		if (t < 6.0):  # 00.00 to 06.00
 			return True
 		return False
 
@@ -372,7 +369,7 @@ class Photocore ():
 		return self.network.get_state_summary()
 
 """ SelfUpdater looks online for newer versions of this code and replaces itself with such a file.
-	Upon a restart the new code should be used, establishing a simple update mechanism. """
+	Upon a restart the new code should be used, thus establishing a simple update mechanism. """
 class SelfUpdater ():
 	def __init__ (self, core=None, use_updater=True):
 		self.core            = core
@@ -1330,7 +1327,7 @@ class Image ():
 	def remove_pure_black (self, img):
 		size = img.get_size()
 		grey_surface = pygame.Surface(size)
-		# get a surface and fill it almost pure black
+		# get a surface and fill it almost pure black (1/255)
 		grey_surface.fill([1,1,1])
 		# draw image on top with pure black set to transparent
 		img.set_colorkey([0,0,0])
@@ -1592,6 +1589,11 @@ class InputHandler ():
 				self.core.set_next_program()
 
 
+"""
+The GUI class abstracts away most of the particulars of the graphics stack.
+This means that all programs should call methods of this class rather than
+directly operating on the screen or using pygame methods.
+"""
 class GUI ():
 	def __init__ (self, core=None):
 		self.core         = core
@@ -1927,13 +1929,14 @@ class ProgramBase ():
 		if (self.is_active):
 			self.make_inactive()
 
+	""" by default, no draw calls are made """
 	def draw (self):
 		pass
 
 	def get_max_time (self):
 		return self.max_time
 
-	### returns the time this program has been active
+	""" returns the time this program has been active """
 	def get_active_time (self):
 		return time.time() - self.active_since
 
