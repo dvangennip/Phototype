@@ -46,6 +46,7 @@ Go through `raspi-config` options. First, make sure all disk space can be used. 
 The phototype code expects two additional folders to be available beside the `phototype` folder. These folders should be named `images` and `uploads`. Newly uploaded files will be placed in the `uploads` folder and resized, adjusted, and finally moved to the `images` folder by the scanner part of `photocore.py`.
 
 The overall structure looks as follows:
+
 	Phototype (root folder, goes into user folder (~))
 	|
 	|- casing                    (not required to run)
@@ -92,6 +93,7 @@ To add a new network, open the `wpa_supplicant` file.
 `sudo nano /etc/wpa_supplicant/wpa_supplicant.conf`
 
 Add a network as follows:
+
 	network={
 	  ssid="The_ESSID"
 	  psk="Your_wifi_password"
@@ -110,6 +112,7 @@ This is not used, so it can be disabled via the `bluetoothctl` tool. Use the com
 
 ### Getting and setting date and time
 Like every Debian distribution, get the time with just `date`. On boot, a RPi will attempt to use the network to set its date and time. When unavailable, it continues from the last known time. Setting is done as follows:
+
 	sudo date --set 1998-11-02 
 	sudo date --set 21:08:00
 
@@ -124,9 +127,7 @@ Make sure auto-login is enabled via `raspi-config`. This boots the device straig
 
 Use `sudo systemctl enable|disable|start|stop|status photocore.service` to get the service going. After enabling and before starting, it’s necessary to call `sudo systemctl daemon-reload` first. A reboot may be necessary to check proper operation.
 
-To be able to set up things on the device without it continuously attempting to take over the screen, placing a file named `nostart.txt` into the `phototype` folder prevents `photocore.py` from running (it exists when it finds that file):
-
-	echo 'some text' > nostart.txt
+To be able to set up things on the device without it continuously attempting to take over the screen, placing a file named `nostart.txt` into the `phototype` folder prevents `photocore.py` from running (it exists when it finds that file). Create such a file with `echo 'some text' > nostart.txt`
 
 Removing the file with `rm nostart.txt` allows the code to run as intended.
 
