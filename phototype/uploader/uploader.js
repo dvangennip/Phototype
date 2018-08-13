@@ -12,8 +12,8 @@ Uploader.init = function () {
 		Dropzone.instances[0].options.addRemoveLinks        = true; // gives option to remove files from queue
 		Dropzone.instances[0].options.acceptedFiles         = 'image/jpeg'; // MIME type
 		Dropzone.instances[0].options.parallelUploads       = 1;    // requests active at the same time
-		Dropzone.instances[0].options.maxFilesize           = 20;   // in MB
-		Dropzone.instances[0].options.resizeHeight          = 800;  // resize to given height in pixels
+		Dropzone.instances[0].options.maxFilesize           = 25;   // in MB
+		Dropzone.instances[0].options.resizeHeight          = 1600; // resize to given height in pixels (2x800 to avoid quality issues)
 		Dropzone.instances[0].options.resizeQuality         = 1;    // in range 0..1 (default 0.8)
 
 		// set events on Dropzone instance
