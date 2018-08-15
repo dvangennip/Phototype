@@ -10,3 +10,4 @@ phototype/versions/*
 .DS_Store
 login-info.md
 *.vlw
+*.psd

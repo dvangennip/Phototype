@@ -22,6 +22,7 @@ import sys
 import time
 import traceback
 from simpleserver import SimpleServer
+import qrcode
 
 if (sys.platform == 'darwin'):
 	# simulate touches by masquerading pointer movements and clicks
@@ -330,9 +331,9 @@ class Photocore ():
 	def set_display_brightness (self, brightness=100, user_initiated=False):
 		self.display.set_brightness(brightness, user_initiated)
 
-	""" Returns time as a string: 15:45:23  10 February 2017 """
+	""" Returns time as a string: 15:45:23  10/08 """
 	def get_time (self):
-		return time.strftime("%H:%M:%S  %d %B %Y", time.localtime())
+		return time.strftime("%H:%M:%S  %d/%m", time.localtime())
 
 	""" Returns time as a float between [0-24)"""
 	def get_time_24h (self):
@@ -607,9 +608,9 @@ class DataManager ():
 			#self.save_external()
 
 	def save_external (self):
-		pass  # not implemented yet
+		pass  # TODO not implemented yet
 		# with open('data.log', 'r') as f:
-		# 	r = requests.post('http://www.sinds194.nl/upload/', files={'{0}_data.log'.format(os.uname().hostname): f})
+		# 	r = requests.post('http://project.sinds194.nl/upload/', files={'{0}_data.log'.format(os.uname().hostname): f})
 
 	def get_program_match (self, name):
 		for program in self.data['programs']:
@@ -632,7 +633,7 @@ class NetworkManager ():
 		self.last_update = 0
 		self.net_types = ('eth0','wlan0')
 		if (sys.platform == 'darwin'):
-			self.net_types = ('en0','en1')
+			self.net_types = ('en1','en0')
 
 		self.state = {
 			self.net_types[0]: {
@@ -650,7 +651,7 @@ class NetworkManager ():
 	def update (self, regular=True):
 		now = time.time()
 
-		if (not regular or self.last_update < now - 30):
+		if (not regular or self.last_update < now - 10):
 			# update network state
 			net_state = psutil.net_if_addrs()
 
@@ -686,6 +687,13 @@ class NetworkManager ():
 		for net in self.net_types:
 			if (state[net].isup):
 				return True
+		return False
+
+	""" Returns wired IP if connected, or WiFI IP if connected, or False if unconnected """
+	def get_ip_address (self):
+		for s in self.state:
+			if (self.state[s]['connected']):
+				return self.state[s]['ip']
 		return False
 
 	def get_state_summary (self):
@@ -769,7 +777,7 @@ class DisplayManager ():
 
 	def _get_value (self, name):
 		if (sys.platform == 'darwin'):
-			return 0
+			return self.brightness
 		else:
 			try:
 				with open(os.path.join(self.path, name), "r") as f:
@@ -1116,7 +1124,7 @@ class ImageManager ():
 			# use photocore's Image class for resizing and saving
 			p = Image(in_file_path)
 			surface, size_string = p.get((800,480), fill_box=True, remove_black=True, check_orientation=True)
-			print('Resizing: ', in_file_path, surface.get_size())
+			#print('Resizing: ', in_file_path, surface.get_size())
 			result = p.save_to_file(size_string, out_file_path)
 
 			if (result is False):
@@ -1128,7 +1136,7 @@ class ImageManager ():
 		if (self.do_delete and marked_for_deletion):
 			# consider removing the original file
 			try:
-				print('Deleting:', in_file_path)
+				#print('Deleting:', in_file_path)
 				os.remove(in_file_path)
 				pass
 			except OSError as ose:
@@ -1184,7 +1192,7 @@ class Image ():
 					img = self.make_circular(img)
 				else:
 					img = self.scale(size, fill_box, fit_to_square, smooth)
-				self.image[size_string] = img
+				self.image[size_string] = img.convert_alpha()
 				# ready to return now
 
 		# if pure blacks need to be removed, do it here after rescaling (smaller file = quicker)
@@ -1194,8 +1202,8 @@ class Image ():
 		return self.image[size_string], size_string
 
 	def load (self):
-		# load image
-		self.image['full'] = pygame.image.load(self.file)
+		# load image (also call convert for a speed-up)
+		self.image['full'] = pygame.image.load(self.file).convert()
 		self.size          = self.image['full'].get_size()
 		self.is_loaded = True
 
@@ -1604,11 +1612,12 @@ class GUI ():
 		self.screenshot_counter = 0
 
 		self.colors = {
-			'foreground': pygame.Color(255, 255, 255),  # white
-			'background': pygame.Color(  0,   0,   0),  # black
-			'support'   : pygame.Color(255,   0,   0),  # red
-			'good'      : pygame.Color(  0, 180,  25),  # green
-			'subtle'    : pygame.Color( 90,  90,  90)   # grey
+			'foreground'  : pygame.Color(255, 255, 255),  # white
+			'background'  : pygame.Color(  0,   0,   0),  # black
+			'support'     : pygame.Color(220,   0,   0),  # red
+			'support-dark': pygame.Color(180,   0,   0),  # dark red
+			'good'        : pygame.Color(  0, 180,  25),  # green
+			'subtle'      : pygame.Color( 90,  90,  90)   # grey
 		}
 
 		pygame.init()
@@ -1766,7 +1775,7 @@ class GUI ():
 		self.dirty = True
 
 	""" Helper function to draw text on screen """
-	def draw_text (self, text="", o='center', x=-1, y=-1, has_back=True, padding=2, fg='foreground', bg='background', s='small'):
+	def draw_text (self, text="", o='center', x=-1, y=-1, has_back=True, padding=2, fg='foreground', bg='background', s='small', onto=None):
 		xpos = self.display_size[0]/2
 		if (x != -1):
 			xpos = x
@@ -1803,12 +1812,16 @@ class GUI ():
 				pos_y = ypos - padding
 			self.draw_rectangle(o=o, x=pos_x, y=pos_y, w=size_x, h=size_y, c=bg, r=False)
 
-		# finally, draw text (onto background)
-		self.screen.blit(text_surface, text_rect)
+		if (onto != None):
+			# draw onto the provided surface
+			onto.blit(text_surface, text_rect)
+		else:
+			# finally, draw text (onto background)
+			self.screen.blit(text_surface, text_rect)
 
-		# set flags
-		self.dirty = True
-		self.dirty_areas.append(text_rect)
+			# set flags
+			self.dirty = True
+			self.dirty_areas.append(text_rect)
 
 	def draw_image (self, img=None, o='center', pos=(0.5,0.5), size=(1,1), mask=None, a=1, rs=True, fill=False, sq=False, ci=False):
 		# decide on place and size
@@ -1862,6 +1875,52 @@ class GUI ():
 		# set flags
 		self.dirty = True
 		self.dirty_areas.append(affected_rect)
+
+	def open_simple_image (self, file):
+		return pygame.image.load(file).convert()
+
+	def draw_simple_image (self, img=None, o='left', pos=(0.5,0.5), onto=None):
+		size = (img.get_width(), img.get_height())
+		
+		# determine position
+		xpos = int(pos[0] * self.display_size[0])
+		ypos = int(pos[1] * self.display_size[1])
+		# use target surface instead if specified
+		if (onto != None):
+			xpos = int(pos[0] * onto.get_width())
+			ypos = int(pos[1] * onto.get_height())
+		# adjust to position image relative to its center
+		if (o == 'center'):
+			xpos = xpos - size[0] / 2
+			ypos = ypos - size[1] / 2
+
+		if (onto != None):
+			# draw onto the provided surface
+			onto.blit(img, (xpos, ypos))
+		else:
+			# draw to screen
+			affected_rect = self.screen.blit(img, (xpos, ypos))
+
+			# set flags
+			self.dirty = True
+			self.dirty_areas.append(affected_rect)
+
+	""" Returns pygame image of QR code """
+	def get_qrcode_image (self, string="no-data"):
+		qr = qrcode.QRCode(
+			version=None,
+			error_correction=qrcode.constants.ERROR_CORRECT_L,
+			box_size=5,
+			border=0
+		)
+		qr.add_data(string)
+		qr.make(fit=True)
+
+		# qr_image is a Pil Image object
+		qr_image = qr.make_image(fill_color="white", back_color="black")
+
+		# convert to pygame Surface and return
+		return pygame.image.fromstring(qr_image.tobytes(), qr_image.size, qr_image.mode)
 
 	def save_screen (self):
 		while (os.path.exists(str(self.screenshot_counter) + '.png')):
@@ -1956,86 +2015,186 @@ class BlankScreen (ProgramBase):
 
 
 class StatusProgram (ProgramBase):
+	def __init__ (self, core=None):
+		super().__init__(core)
+
+		self.current_address        = ''
+		self.current_address_text   = ''
+		self.bottom_bar_pos         = 448
+		self.bottom_bar_neutral_pos = 448
+		self.bottom_bar_active      = False
+		self.status_open            = True
+
+		self.icon_clock       = self.gui.open_simple_image('assets/icon_clock_b.png')
+		self.icon_crosshair   = self.gui.open_simple_image('assets/icon_crosshair_b.png')
+		self.icon_dashboard   = self.gui.open_simple_image('assets/icon_dashboard_b.png')
+		self.icon_diskette    = self.gui.open_simple_image('assets/icon_diskette_b.png')
+		self.icon_half_moon   = self.gui.open_simple_image('assets/icon_half_moon_b.png')
+		self.icon_image       = self.gui.open_simple_image('assets/icon_image_b.png')
+		self.icon_sun         = self.gui.open_simple_image('assets/icon_sun_b.png')
+		self.icon_thermometer = self.gui.open_simple_image('assets/icon_thermometer_b.png')
+		self.icon_wifi        = self.gui.open_simple_image('assets/icon_wifi_b.png')
+		self.icon_power       = self.gui.open_simple_image('assets/icon_power_b.png')
+		self.button_128       = self.gui.open_simple_image('assets/button_128.png')
+
+		# init bottom bar surface (eases its reuse)
+		self.bottom_bar = pygame.Surface((800, 32))
+		self.bottom_bar.fill(self.gui.colors['support'])
+		# add identifier and version
+		self.gui.draw_text("status", o='left', x=40, y=6, fg='foreground', has_back=False, onto=self.bottom_bar)
+		self.gui.draw_text("v{0}".format(version), o='left', x=770, y=6, fg='support-dark', has_back=False, onto=self.bottom_bar)
+		# add handle icon
+		handle = self.gui.open_simple_image('assets/icon_more_r.png')
+		self.gui.draw_simple_image(handle, o='center', pos=(0.5, 0.5), onto=self.bottom_bar)
+
 	def update (self):
-		interactive = False
-		now         = time.time()
+		interactive           = False
+		now                   = time.time()
+		settle_bottom_bar_pos = False
 		
 		# is state interactive?
 		if (self.core.input.state > self.core.input.REST):
 			self.dirty  = True
 			interactive = True
 
-		# check if input is given to adjust screen brightness
+		# check if the bottom bar is used to drag
 		if (self.core.input.state >= self.core.input.DRAGGING):
-			# first check if all this actually started close to the slider
-			start_x = self.core.input.drag[0].x
-			start_y = abs(self.core.input.drag[0].y - 295)  # 295 is middle of slider y-position
-			if (start_x > 350 and start_y < 15):
-				# 350 is left edge, 440 is 800 - 450 range - 10 edge margin (so it's easier to get 100%)
-				value = round(100 * max(min((self.core.input.pos.x - 350) / 440, 1), 0))
-				self.core.set_display_brightness(value, True)
+			relative_y = abs(self.core.input.drag[0].y - (self.bottom_bar_neutral_pos + 16))
+			if (relative_y < 22):  # 16px (half height of bar) + 6px margin
+				self.bottom_bar_active = True
+				self.bottom_bar_pos    = 480 * (self.core.input.pos.y / self.gui.display_size[1]) - 16
+				self.status_open       = (self.bottom_bar_pos > 0)
 
-		# also check for button presses
-		if (self.core.input.state == self.core.input.RELEASED_HOLD):
-			# check for power button
-			if (self.core.input.drag[0].x > 750 and self.core.input.drag[0].y < 50):
-				self.core.set_exit(shutdown=True)
-			# version number doubles as secret exit core button
-			elif (self.core.input.drag[0].x < 30 and self.core.input.drag[0].y > 450):
-				self.core.set_exit()
+				# once released, ensure the bottom bar goes either up or down
+				if (self.core.input.state == self.core.input.RELEASED_DRAG):
+					settle_bottom_bar_pos = True
+					
+					# decide on neutral position - depends on the edge that is closer (values + 2px margin)
+					self.bottom_bar_neutral_pos = 482 * round(self.core.input.pos.y / self.gui.display_size[1]) - 34
+			else:
+				if (self.bottom_bar_active):
+					settle_bottom_bar_pos = True
+		else:
+			if (self.bottom_bar_active):
+				settle_bottom_bar_pos = True
+
+		# bring bottom bar position back to default position, without abrupt change
+		if (self.bottom_bar_active and settle_bottom_bar_pos):
+			# get extra amount over neutral position, and take a portion of that off
+			self.bottom_bar_pos = self.bottom_bar_pos + 0.2 * (self.bottom_bar_neutral_pos - self.bottom_bar_pos)
+
+			# set the status screen status based on the bottom bar position
+			self.status_open = (self.bottom_bar_pos > 0)
+
+			# implement a stopping rule
+			if (abs(self.bottom_bar_pos - self.bottom_bar_neutral_pos) < 0.1):
+				self.bottom_bar_pos = self.bottom_bar_neutral_pos
+				self.bottom_bar_active = False
+
+		# if the status panel is open, update its UI code
+		if (self.status_open):
+			# calculate y-position offset due to moving bar
+			self.po  = round(self.bottom_bar_pos - 448)  # in pixels
+			self.por = self.po / 480                     # relative: [0..1]
+			
+			# check if input is given to adjust screen brightness
+			if (self.core.input.state >= self.core.input.DRAGGING):
+				print(self.core.input.pos.x, self.core.input.pos.y)
+				# first check if all this actually started close to the slider
+				start_x = self.core.input.drag[0].x
+				start_y = abs(self.core.input.drag[0].y - (54 + self.po))  # 54 is middle of slider y-position
+				if (start_x > 459 and start_y < 15):
+					# 459 is left edge, 331 is 341 range - 10 edge margin (so it's easier to get 100%)
+					value = round(100 * max(min((self.core.input.pos.x - 459) / 331, 1), 0))
+					self.core.set_display_brightness(value, True)
+					print(value)
+
+			# also check for button presses
+			if (self.core.input.state == self.core.input.RELEASED_HOLD):
+				# check for power button
+				if (self.core.input.drag[0].x > 670 and self.core.input.drag[0].x < 720
+					and self.core.input.drag[0].y > (330 + self.po) and self.core.input.drag[0].y < (380 + self.po)):
+					self.core.set_exit(shutdown=True)
+				# version number doubles as secret exit core button
+				elif (self.core.input.drag[0].x > 760 and self.core.input.drag[0].y > (450 + self.po)):
+					self.core.set_exit()
+
+			# check if IP is still current
+			new_address = self.core.network.get_ip_address()
+			if (new_address != self.current_address):
+				if (new_address is False):
+					self.current_address      = 'project.sinds1984.nl'
+					self.current_address_text = 'No network available'
+				else:
+					self.current_address      = new_address
+					self.current_address_text = 'IP: ' + new_address
+				self.address_qr_image = self.gui.get_qrcode_image('http://' + self.current_address)
 
 		# update on change or every 1/4 second
-		if (self.dirty or now > self.last_update + 0.25):
+		if (self.bottom_bar_active):
+			super().update(full=True)
+		elif (self.dirty or now > self.last_update + 0.25):
 			super().update()  # this calls for update
 
 	def draw (self):
-		# identifier
-		self.gui.draw_text("Status",      o='left', x=20, y=10, fg='support', s='large')
+		# bottom bar
+		self.gui.draw_surface(self.bottom_bar, o='left', x=0, y=self.bottom_bar_pos, r=False)
 
-		# distance (+plus sensor state)
-		self.gui.draw_text("Distance sensor", o='left', x=150, y=65)
-		self.gui.draw_slider(o='left', x=350, y=92, w=450, h=5, r=(self.core.get_distance() / 6.5) )
-		self.gui.draw_text("{0:.2f}".format(self.core.get_distance()) + "m", o='left', x=350, y=65)
+		if (self.status_open):
+			# number of photos in system
+			self.gui.draw_simple_image(self.icon_image, pos=(0.05, 0.08 + self.por))
+			self.gui.draw_text(str(self.core.get_images_count()),       o='left', x=86, y=44 + self.po)
 
-		# number of photos in system
-		self.gui.draw_text("Photos",      o='left', x=150, y=120)
-		self.gui.draw_text(str(self.core.get_images_count()),       o='left', x=350, y=120)
+			# storage (% available/used)
+			self.gui.draw_simple_image(self.icon_diskette, pos=(0.05, 0.21 + self.por))
+			self.gui.draw_slider(o='left', x=86, y=128 + self.po, w=110, h=5, r=(self.core.get_disk_space() / 100.0), bg='subtle')
+			self.gui.draw_text(str(self.core.get_disk_space()) + "%",   o='left', x=86, y=106 + self.po)
 
-		# storage (% available/used)
-		self.gui.draw_text("Disk space",  o='left', x=150, y=175)
-		self.gui.draw_slider(o='left', x=350, y=197, w=450, h=5, r=(self.core.get_disk_space() / 100.0), bg='good')
-		self.gui.draw_text(str(self.core.get_disk_space()) + "%",   o='left', x=350, y=175)
+			# time
+			self.gui.draw_simple_image(self.icon_clock, pos=(0.05, 0.34 + self.por))
+			self.gui.draw_text(str(self.core.get_time()),               o='left', x=86, y=169 + self.po)
 
-		# memory usage
-		self.gui.draw_text("Memory usage", o='left', x=150, y=230)
-		self.gui.draw_slider(o='left', x=350, y=252, w=450, h=5, r=(self.core.get_memory_usage() / 100.0), bg='good')
-		self.gui.draw_text(str(self.core.get_memory_usage()) + "%", o='left', x=350, y=230)
-		
-		# display brightness
-		self.gui.draw_text("Display brightness", o='left', x=150, y=285)
-		self.gui.draw_slider(o='left', x=350, y=283, w=450, h=24, r=(self.core.get_display_brightness() / 100.0), is_ui=True)
-		self.gui.draw_text(str(self.core.get_display_brightness()) + "%", o='left', x=350, y=285, has_back=False)
+			# distance (+plus sensor state)
+			self.gui.draw_simple_image(self.icon_crosshair, pos=(0.295, 0.08 + self.por))
+			self.gui.draw_slider(o='left', x=283, y=66 + self.po, w=110, h=5, r=(self.core.get_distance() / 6.5), bg='subtle')
+			self.gui.draw_text("{0:.2f} m".format(self.core.get_distance()), o='left', x=283, y=44 + self.po)
 
-		# network (connected, IP)
-		self.gui.draw_text("Network",     o='left', x=150, y=340)
-		self.gui.draw_text(str(self.core.get_network_state()),      o='left', x=350, y=340)
+			# memory usage
+			self.gui.draw_simple_image(self.icon_dashboard, pos=(0.295, 0.21 + self.por))
+			self.gui.draw_slider(o='left', x=283, y=128 + self.po, w=110, h=5, r=(self.core.get_memory_usage() / 100.0), bg='subtle')
+			self.gui.draw_text(str(self.core.get_memory_usage()) + "%", o='left', x=283, y=106 + self.po)
 
-		# time
-		self.gui.draw_text("Time",        o='left', x=150, y=395)
-		self.gui.draw_text(str(self.core.get_time()),               o='left', x=350, y=395)
+			# temperature
+			self.gui.draw_simple_image(self.icon_thermometer, pos=(0.295, 0.34 + self.por))
+			self.gui.draw_text(str(self.core.get_temperature()) + "ºC", o='left', x=283, y=169 + self.po)
+			
+			# display brightness
+			self.gui.draw_simple_image(self.icon_sun, pos=(0.52, 0.08 + self.por))
+			self.gui.draw_slider(o='left', x=459, y=42 + self.po, w=341, h=24, r=(self.core.get_display_brightness() / 100.0), is_ui=True)
+			self.gui.draw_text(str(self.core.get_display_brightness()) + "%", o='left', x=459, y=44 + self.po, has_back=False)
 
-		# temperature
-		self.gui.draw_text("Temperature", o='left', x=150, y=450)
-		self.gui.draw_text(str(self.core.get_temperature()) + "ºC", o='left', x=350, y=450)
+			# guidance for adding photos text
+			self.gui.draw_text('To add photos, go to the address below', o='left', x=459, y=100 + self.po)
+			self.gui.draw_text('or scan the QR code with your phone',    o='left', x=459, y=120 + self.po)
 
-		# power off button
-		self.gui.draw_circle(x=776, y=24, rad=16, r=False)
-		self.gui.draw_circle(x=776, y=24, rad=13, c='background', r=False)
-		self.gui.draw_rectangle(x=776, y=8,  w=10, h=30, c='background', r=False)
-		self.gui.draw_rectangle(x=776, y=12, w=4,  h=12, c='support', r=False)
+			# network (connected, IP)
+			self.gui.draw_simple_image(self.icon_wifi, pos=(0.52, 0.34 + self.por))
+			self.gui.draw_text(self.current_address_text,      o='left', x=459, y=169 + self.po)
+			self.gui.draw_simple_image(self.address_qr_image, pos=(0.791, 0.313 + self.por))
 
-		# version
-		self.gui.draw_text("v{0}".format(version), o='left', x=5, y=460, fg='subtle')
+			# buttons
+			self.gui.draw_simple_image(self.button_128, pos=(0.05,  0.6 + self.por))
+			self.gui.draw_simple_image(self.button_128, pos=(0.235, 0.6 + self.por))
+			self.gui.draw_simple_image(self.button_128, pos=(0.42,  0.6 + self.por))
+			self.gui.draw_simple_image(self.button_128, pos=(0.605, 0.6 + self.por))
+			self.gui.draw_simple_image(self.button_128, pos=(0.79,  0.6 + self.por))
+
+			self.gui.draw_simple_image(self.icon_half_moon, o='center', pos=(0.13,  0.734 + self.por))
+			self.gui.draw_simple_image(self.icon_half_moon, o='center', pos=(0.315, 0.734 + self.por))
+			self.gui.draw_simple_image(self.icon_half_moon, o='center', pos=(0.50,  0.734 + self.por))
+			self.gui.draw_simple_image(self.icon_half_moon, o='center', pos=(0.685, 0.734 + self.por))
+			self.gui.draw_simple_image(self.icon_power,     o='center', pos=(0.87,  0.734 + self.por))
+
 
 class DualDisplay (ProgramBase):
 	def __init__ (self, core=None):

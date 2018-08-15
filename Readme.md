@@ -37,10 +37,11 @@ Go through `raspi-config` options. First, make sure all disk space can be used. 
 - pip (`sudo easy_install3 -U pip`)
 - [psutil][3] (`sudo pip3 install --upgrade psutil`)
 - [Pillow][4]
+- [QRCode][5]
 
 **manual install:**
-- python-multitouch ([https://github.com/pimoroni/python-multitouch][5])
-- [DropzoneJS][6] (used for uploading images)
+- python-multitouch ([https://github.com/pimoroni/python-multitouch][6])
+- [DropzoneJS][7] (used for uploading images)
 
 ## Folder structure
 The phototype code expects two additional folders to be available beside the `phototype` folder. These folders should be named `images` and `uploads`. Newly uploaded files will be placed in the `uploads` folder and resized, adjusted, and finally moved to the `images` folder by the scanner part of `photocore.py`.
@@ -54,6 +55,7 @@ The overall structure looks as follows:
 	|- info                      (not required to run)
 	|- phototype
 	   |
+	   |- assets
 	   |- uploader
 	   |- versions
 	|- S4DataVisualiser          (not required to run)   
@@ -75,7 +77,7 @@ Navigate to the photocore directory and run
 ### Display backlight adjustments
 Adjust the backlight with the following command:
 `echo n > /sys/class/backlight/rpi_backlight/brightness`
-See also [rpi-backlight documentation][7].
+See also [rpi-backlight documentation][8].
 
 Check the backlight permissions to be able to run the code.
 `sudo nano /etc/udev/rules.d/backlight-permissions.rules`
@@ -86,7 +88,7 @@ Add the line:
 The `photocore.py` script makes use of the above methods to automatically adjust the display brightness throughout the day.
 
 ### WiFi
-[By default on a RPi][8], scan available networks using
+[By default on a RPi][9], scan available networks using
 `sudo iwlist wlan0 scan`
 
 To add a new network, open the `wpa_supplicant` file.
@@ -101,7 +103,7 @@ Add a network as follows:
 
 Status can be checked using `sudo wpa_cli status`.
 
-#### Using the [wifi module][9]
+#### Using the [wifi module][10]
 _Note: not installed in final version._
 Use `sudo wifi scan` to find available networks. With `sudo wifi list` it shows the stored networks.
 
@@ -118,9 +120,9 @@ Like every Debian distribution, get the time with just `date`. On boot, a RPi wi
 
 ### Serial connection
 _Note: not used in final version._
-Before the serial (UART) connection can be used, the default terminal setup on those ports needs to be disabled ([as per online info][10]). This can be done via `rasp-config` (Disable terminal over serial). Then in `/boot/config.txt`, set `enable_uart=1`.
+Before the serial (UART) connection can be used, the default terminal setup on those ports needs to be disabled ([as per online info][11]). This can be done via `rasp-config` (Disable terminal over serial). Then in `/boot/config.txt`, set `enable_uart=1`.
 
-The default serial connection on a RPi3 is `/dev/ttyS0`. The LV-MaxSonar is connected to `3v3`, `GND`, `TX`, and `RX` [GPIO pins][11] (with the RX connected to TX on the other side and vice versa). Baud rate is 9600, with no parity, byte size of 8, and 1 stop bit. Because it runs in RS232 mode, not inverted RS232 as expected by UART, any binary signals need to be inverted.
+The default serial connection on a RPi3 is `/dev/ttyS0`. The LV-MaxSonar is connected to `3v3`, `GND`, `TX`, and `RX` [GPIO pins][12] (with the RX connected to TX on the other side and vice versa). Baud rate is 9600, with no parity, byte size of 8, and 1 stop bit. Because it runs in RS232 mode, not inverted RS232 as expected by UART, any binary signals need to be inverted.
 
 ### Running script at login
 Make sure auto-login is enabled via `raspi-config`. This boots the device straight to the terminal. Second, copy the `photo core.service` file to `/lib/systemd/system/photocore.service`. Its owner should be `root` and the permissions should be adjusted to 644 (rw-r-r) using `chmod`. The permissions of the python script (`photocore.py`) also need to be adjusted to allow  the code to run with the necessary privileges. Set it to 777 (rwx-rwx-rwx), owner can remain `pi`.
@@ -142,19 +144,20 @@ If all else fails, this will do:
 `sudo killall -vs SIGKILL python3`
 
 ## Visualising data
-Phototype keeps track of user interactions with the device. This data is saved in `data.bin` and human-readable `data.log` files in the `phototype` folder (available when the script has run at least once). These files are not directly suitable for visual analysis. To help with this, a `visualiser.py` script prepares the data to be importing and visualised by a [Processing.py][12] script. Two scripts are included in the `S4DataVisualiser` folders.
+Phototype keeps track of user interactions with the device. This data is saved in `data.bin` and human-readable `data.log` files in the `phototype` folder (available when the script has run at least once). These files are not directly suitable for visual analysis. To help with this, a `visualiser.py` script prepares the data to be importing and visualised by a [Processing.py][13] script. Two scripts are included in the `S4DataVisualiser` folders.
 
 The visualiser scripts expect that user data is provided in unique files, each named `pN_data.bin` (where N denotes a participant number, e.g., p1 or p2).
 
 ## License
-The source code and models are available under a [CC-BY-NC 3.0 license][13]. You are free to share, copy and redistribute the material in any medium or format, and to adapt it for other uses. However, you must give credit and cannot use the code and materials for commercial purposes.
+The source code and models are available under a [CC-BY-NC 3.0 license][14]. You are free to share, copy and redistribute the material in any medium or format, and to adapt it for other uses. However, you must give credit and cannot use the code and materials for commercial purposes.
 
-Note that [DropzoneJS][14] files are included in this repository for convenience but remain under the original MIT license.
+Note that [DropzoneJS][15] files are included in this repository for convenience but remain under the original MIT license.
+
+Icons on the status pane by [hirschwolf][16] from Flaticon are included in this repository for convenience but remain under the original Flaticon Basic license.
 
 ## Known issues and possible improvements for future revisions
 - Uploading photos:
 	- Webpage URL should be more user-friendly: use some reverse look-up system to overcome IP issues, such that people can use a human-readable website URL. Alternatively, work with a scannable QR code to ease navigating to the right url on another device.
-	- The webpage may already reduce the file size before uploading, significantly reducing upload time. Ideally, all resizing is done browser-side to capitalise on the additional processing power available. Check [https://github.com/nodeca/pica][15]. Dropzone also seems to have gained abilities in this regard in more recent versions.
 - Turning on and off should be more straightforward (currently relies on a hidden button in the bottom-left corner of the status screen).
 - Implement a dropdown status screen, similar to iOS and Android smartphones. This should ease management by users.
 - Redo the way the distance sensor is read. It is currently imprecise and slow, so it falls short of its intended use. If it works better, the effects of its use can be stronger.
@@ -165,17 +168,18 @@ Note that [DropzoneJS][14] files are included in this repository for convenience
 [2]:	https://www.raspberrypi.org/downloads/raspbian/
 [3]:	https://github.com/giampaolo/psutil/blob/master/INSTALL.rst
 [4]:	http://pillow.readthedocs.io/en/latest/installation.html
-[5]:	https://github.com/pimoroni/python-multitouch
-[6]:	http://www.dropzonejs.com/
-[7]:	https://github.com/linusg/rpi-backlight/blob/master/rpi_backlight.py
-[8]:	https://www.raspberrypi.org/documentation/configuration/wireless/wireless-cli.md
-[9]:	https://wifi.readthedocs.io/en/latest/wifi_command.html#tutorial
-[10]:	http://elinux.org/RPi_Serial_Connection
-[11]:	http://pinout.xyz/pinout/ground#
-[12]:	http://py.processing.org/
-[13]:	https://creativecommons.org/licenses/by-nc/3.0/au/
-[14]:	http://www.dropzonejs.com/
-[15]:	https://github.com/nodeca/pica
+[5]:	https://pypi.org/project/qrcode/
+[6]:	https://github.com/pimoroni/python-multitouch
+[7]:	http://www.dropzonejs.com/
+[8]:	https://github.com/linusg/rpi-backlight/blob/master/rpi_backlight.py
+[9]:	https://www.raspberrypi.org/documentation/configuration/wireless/wireless-cli.md
+[10]:	https://wifi.readthedocs.io/en/latest/wifi_command.html#tutorial
+[11]:	http://elinux.org/RPi_Serial_Connection
+[12]:	http://pinout.xyz/pinout/ground#
+[13]:	http://py.processing.org/
+[14]:	https://creativecommons.org/licenses/by-nc/3.0/au/
+[15]:	http://www.dropzonejs.com/
+[16]:	https://www.flaticon.com/authors/hirschwolf
 
 [image-1]:	info/phototype-overview.png
 [image-2]:	info/wiring-schematic.png
