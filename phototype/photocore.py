@@ -132,12 +132,11 @@ class Photocore ():
 		
 		# init programs
 		self.programs                = []
-		self.program_active_index    = 1
-		self.program_preferred_index = 1
+		self.program_active_index    = 0
+		self.program_preferred_index = 0
 		self.max_time_for_program    = time.time() + 30
 		self.switch_requested        = False
 		self.add_program('BlankScreen')
-		self.add_program('StatusProgram')
 		self.add_program('DualDisplay')
 		self.add_program('PhotoSoup')
 
@@ -192,10 +191,10 @@ class Photocore ():
 				else:
 					self.program_preferred_index = 0
 			else:
-				# pick another program (but avoid blank or status programs, so index >= 2)
+				# pick another program (but avoid blank program, so index >= 1)
 				# and make sure the new pick isn't similar to the current program
 				while True:
-					self.program_preferred_index = random.randint(2, len(self.programs) - 1)
+					self.program_preferred_index = random.randint(1, len(self.programs) - 1)
 					if (self.program_preferred_index != self.program_active_index):
 						break
 
@@ -310,7 +309,11 @@ class Photocore ():
 		#self.set_active(self.program_preferred_index)
 
 	def request_switch (self):
+		print('request_switch()')
 		self.switch_requested = True
+
+	def toggle_status_panel (self):
+		self.get_active().toggle_status_panel()
 
 	def get_images_count (self):
 		return self.images.get_count()
@@ -579,7 +582,9 @@ class DataManager ():
 	def save (self, export=False):
 		# regular save
 		with open('data.bin', 'wb') as f:
-			pickle.dump(self.data, f)
+			# TODO fix macOS issue
+			if (sys.platform != 'darwin'):
+				pickle.dump(self.data, f)
 			self.last_save = time.time()
 
 		# export to human-readable file
@@ -1503,6 +1508,8 @@ class InputHandler ():
 					self.core.set_preferred(event.key - 48)  # adjust range [0-9]
 				elif (event.key == K_s):
 					self.core.gui.save_screen()
+				elif (event.key == K_p):
+					self.core.toggle_status_panel()
 
 		# house keeping
 		self.last_pos = self.pos.copy()
@@ -1592,8 +1599,8 @@ class InputHandler ():
 					else:
 						# this was a tap and hold
 						self.state = self.RELEASED_HOLD
-		elif (touch.slot == 9 and event == TS_RELEASE):
-				# a ten finger press will go to the next program
+		elif (touch.slot == 5 and event == TS_RELEASE):
+				# a six finger press will go to the next program
 				self.core.set_next_program()
 
 
@@ -1615,7 +1622,7 @@ class GUI ():
 			'foreground'  : pygame.Color(255, 255, 255),  # white
 			'background'  : pygame.Color(  0,   0,   0),  # black
 			'support'     : pygame.Color(220,   0,   0),  # red
-			'support-dark': pygame.Color(180,   0,   0),  # dark red
+			'support-dark': pygame.Color(150,   0,   0),  # dark red
 			'good'        : pygame.Color(  0, 180,  25),  # green
 			'subtle'      : pygame.Color( 90,  90,  90)   # grey
 		}
@@ -1677,7 +1684,7 @@ class GUI ():
 			if (self.core.input.state > self.core.input.REST):
 				self.draw_circle(x=self.core.input.pos.x, y=self.core.input.pos.y, r=False)
 
-	def draw_rectangle (self, o='center', x=-1, y=-1, w=20, h=20, c='support', a=1, r=True, surf=None):
+	def draw_rectangle (self, o='center', x=-1, y=-1, w=20, h=20, c='support', a=1, r=True, surf=None, onto=None):
 		xpos = self.display_size[0]/2
 		if (x != -1):
 			if (r):
@@ -1709,11 +1716,15 @@ class GUI ():
 		# set alpha
 		rectangle_surface.set_alpha(min(max(a*255,0),255))
 
-		self.screen.blit(rectangle_surface, rectangle_rect)
-		
-		# set flags
-		self.dirty = True
-		self.dirty_areas.append(rectangle_rect)
+		if (onto != None):
+			# draw onto the provided surface
+			onto.blit(rectangle_surface, rectangle_rect)
+		else:
+			self.screen.blit(rectangle_surface, rectangle_rect)
+			
+			# set flags
+			self.dirty = True
+			self.dirty_areas.append(rectangle_rect)
 
 		# return surface and rectangle for future reference if need be
 		return (rectangle_surface, rectangle_rect)
@@ -1931,6 +1942,7 @@ class GUI ():
 
 class ProgramBase ():
 	def __init__ (self, core=None):
+		# general variables
 		self.core         = core
 		self.gui          = core.gui
 		self.dsize        = core.gui.display_size
@@ -1942,6 +1954,71 @@ class ProgramBase ():
 		self.max_time     = 60   # in seconds
 		self.shown        = []   # list, each item denotes for how long program has been active
 
+		# status panel variables
+		self.current_address          = ''
+		self.current_address_text     = ''
+		self.address_qr_image         = self.gui.get_qrcode_image('http://project.sinds1984.nl')
+		self.status_panel_pos         = -32
+		self.status_panel_neutral_pos = -32
+		self.status_panel_active      = False
+		self.status_open              = False
+		self.po                       = 0
+		self.por                      = 0
+
+		# init status panel surface (eases its reuse)
+		self.status_panel = pygame.Surface((800, 480))
+		self.status_panel.fill(self.gui.colors['background'])
+		# because panel surface also includes the fullscreen black background, draw the bottom bar on top
+		self.gui.draw_rectangle(o='left', x=0, y=448, w=800, h=32, r=False, onto=self.status_panel)
+		# add identifier and version
+		self.gui.draw_text("status", o='left', x=40, y=6+448, fg='foreground', has_back=False, onto=self.status_panel)
+		self.gui.draw_text("v{0}".format(version), o='left', x=770, y=6+448, fg='support-dark', has_back=False, onto=self.status_panel)
+
+		# draw status panel icons
+		icon_clock       = self.gui.open_simple_image('assets/icon_clock_b.png')
+		icon_crosshair   = self.gui.open_simple_image('assets/icon_crosshair_b.png')
+		icon_dashboard   = self.gui.open_simple_image('assets/icon_dashboard_b.png')
+		icon_diskette    = self.gui.open_simple_image('assets/icon_diskette_b.png')
+		icon_half_moon   = self.gui.open_simple_image('assets/icon_half_moon_b.png')
+		icon_image       = self.gui.open_simple_image('assets/icon_image_b.png')
+		icon_sun         = self.gui.open_simple_image('assets/icon_sun_b.png')
+		icon_thermometer = self.gui.open_simple_image('assets/icon_thermometer_b.png')
+		icon_wifi        = self.gui.open_simple_image('assets/icon_wifi_b.png')
+		icon_restart     = self.gui.open_simple_image('assets/icon_restart_b.png')
+		icon_power       = self.gui.open_simple_image('assets/icon_power_b.png')
+		button_128       = self.gui.open_simple_image('assets/button_128.png')
+		handle           = self.gui.open_simple_image('assets/icon_more_r.png')
+
+		self.gui.draw_simple_image(handle, o='center', pos=(0.5,  0.967), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_image,         pos=(0.05,  0.08), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_diskette,      pos=(0.05,  0.21), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_clock,         pos=(0.05,  0.34), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_crosshair,     pos=(0.295, 0.08), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_dashboard,     pos=(0.295, 0.21), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_thermometer,   pos=(0.295, 0.34), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_sun,           pos=(0.52,  0.08), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_wifi,          pos=(0.52,  0.34), onto=self.status_panel)
+
+		# draw guidance for adding photos text
+		self.gui.draw_text('To add photos, go to the address below', o='left', x=459, y=100, has_back=False, onto=self.status_panel)
+		self.gui.draw_text('or scan the QR code with your phone',    o='left', x=459, y=120, has_back=False, onto=self.status_panel)
+
+		# draw status panel permanent buttons
+		self.gui.draw_simple_image(button_128,       pos=(0.05,  0.6), onto=self.status_panel)
+		self.gui.draw_simple_image(button_128,       pos=(0.235, 0.6), onto=self.status_panel)
+		self.gui.draw_simple_image(button_128,       pos=(0.42,  0.6), onto=self.status_panel)
+		self.gui.draw_simple_image(button_128,       pos=(0.605, 0.6), onto=self.status_panel)
+		self.gui.draw_simple_image(button_128,       pos=(0.79,  0.6), onto=self.status_panel)
+		self.gui.draw_rectangle(x=0.87, y=0.734, w=118, h=2, onto=self.status_panel)
+
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.13,  0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.315, 0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.50,  0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.685, 0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.685, 0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_restart,   o='center', pos=(0.87,  0.669), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_power,     o='center', pos=(0.87,  0.798), onto=self.status_panel)
+
 	def get_name (self):
 		return self.__class__.__name__
 
@@ -1950,11 +2027,30 @@ class ProgramBase ():
 		return True
 
 	""" code to run every turn, needs to signal whether a gui update is needed """
-	def update (self, dirty=True, full=False):
+	def update (self, dirty=True, full=False, ignore=False):
+		# use local variables so these can be adjusted
+		my_dirty  = dirty
+		my_full   = full
+		my_ignore = ignore
+
+		# update the status panel state
+		st = self.update_status_panel()
+
+		# ensure the requested updates from the status panel are incorporated
+		if (st > 0):
+			my_dirty  = True
+			my_ignore = False
+		if (st == 2):
+			my_full  = True
+
+		# if this update is to be ignored, exit rightaway
+		if (my_ignore):
+			return
+
 		# always trigger update in absence of better judgement
-		if (full):
+		if (my_full):
 			self.gui.set_dirty_full()
-		elif (dirty):
+		elif (my_dirty):
 			self.gui.set_dirty()
 		# update time since last update
 		self.last_update = time.time()
@@ -1962,6 +2058,109 @@ class ProgramBase ():
 		self.dirty = False
 		if (self.first_run):
 			self.first_run = False
+
+	""" updates logic for status panel """
+	def update_status_panel (self):
+		interactive           = False
+		now                   = time.time()
+		settle_status_panel_pos = False
+		
+		# is state interactive?
+		if (self.core.input.state > self.core.input.REST):
+			self.dirty  = True
+			interactive = True
+
+		# check if the bottom bar is used to drag
+		if (self.core.input.state >= self.core.input.DRAGGING):
+			relative_y = abs(self.core.input.drag[0].y - (self.status_panel_neutral_pos + 16))
+			if (relative_y < 22):  # 16px (half height of bar) + 6px margin
+				self.status_panel_active = True
+				self.status_panel_pos    = 480 * (self.core.input.pos.y / self.gui.display_size[1]) - 16
+				self.status_open       = (self.status_panel_pos > 0)
+
+				# once released, ensure the bottom bar goes either up or down
+				if (self.core.input.state == self.core.input.RELEASED_DRAG):
+					settle_status_panel_pos = True
+					
+					# decide on neutral position - depends on the edge that is closer (values + 2px margin)
+					self.status_panel_neutral_pos = 482 * round(self.core.input.pos.y / self.gui.display_size[1]) - 34
+			else:
+				if (self.status_panel_active):
+					settle_status_panel_pos = True
+		else:
+			if (self.status_panel_active):
+				settle_status_panel_pos = True
+
+		# bring bottom bar position back to default position, without abrupt change
+		if (self.status_panel_active and settle_status_panel_pos):
+			# get extra amount over neutral position, and take a portion of that off
+			self.status_panel_pos = self.status_panel_pos + 0.2 * (self.status_panel_neutral_pos - self.status_panel_pos)
+
+			# set the status screen status based on the bottom bar position
+			self.set_status_panel_state(self.status_panel_neutral_pos > 0)
+
+			# implement a stopping rule
+			if (abs(self.status_panel_pos - self.status_panel_neutral_pos) < 0.1):
+				self.status_panel_pos = self.status_panel_neutral_pos
+				self.status_panel_active = False
+
+		# if the status panel is open, update its UI code
+		if (self.status_open):
+			# calculate y-position offset due to moving bar
+			self.po  = round(self.status_panel_pos - 448)  # in pixels
+			self.por = self.po / 480                     # relative: [0..1]
+			
+			# check if input is given to adjust screen brightness
+			if (self.core.input.state >= self.core.input.DRAGGING):
+				# first check if all this actually started close to the slider
+				start_x = self.core.input.drag[0].x
+				start_y = abs(self.core.input.drag[0].y - (54 + self.po))  # 54 is middle of slider y-position
+				if (start_x > 459 and start_y < 15):
+					# 459 is left edge, 331 is 341 range - 10 edge margin (so it's easier to get 100%)
+					value = round(100 * max(min((self.core.input.pos.x - 459) / 331, 1), 0))
+					self.core.set_display_brightness(value, True)
+
+			# also check for button (128x128px) presses
+			if (self.core.input.state == self.core.input.RELEASED_TAP):
+				# first check if tap is within the vertical range
+				if (self.core.input.pos.y > (288 + self.po) and self.core.input.pos.y < (416 + self.po)):
+					# check for program buttons
+					if (self.core.input.pos.x > 40 and self.core.input.pos.x < 168):
+						self.core.set_preferred(1)
+					elif (self.core.input.pos.x > 188 and self.core.input.pos.x < 316):
+						self.core.set_preferred(2)
+					elif (self.core.input.pos.x > 336 and self.core.input.pos.x < 464):
+						self.core.set_preferred(3)
+					elif (self.core.input.pos.x > 484 and self.core.input.pos.x < 612):
+						self.core.set_preferred(0)
+
+			if (self.core.input.state == self.core.input.RELEASED_HOLD):
+				# first check if tap is within the horizontal range (with a 10px margin either way)
+				if (self.core.input.pos.x > 670 and self.core.input.pos.x < 712):
+					# check for restart button
+					if (self.core.input.pos.y > (295 + self.po) and self.core.input.pos.y < (347 + self.po)):
+						self.core.set_exit()
+					# check for power button
+					elif (self.core.input.pos.y > (357 + self.po) and self.core.input.pos.y < (409 + self.po)):
+						self.core.set_exit(shutdown=True)
+
+			# check if IP is still current
+			new_address = self.core.network.get_ip_address()
+			if (new_address != self.current_address):
+				if (new_address is False):
+					self.current_address      = 'project.sinds1984.nl'
+					self.current_address_text = 'No network available'
+				else:
+					self.current_address      = new_address
+					self.current_address_text = 'IP: ' + new_address
+				self.address_qr_image = self.gui.get_qrcode_image('http://' + self.current_address)
+
+		# update on change or every 1/4 second
+		if (self.status_panel_active):
+			return 2  # full update required
+		elif (self.dirty or now > self.last_update + 0.25):
+			return 1  # regular update required
+		return 0      # no update required
 
 	""" code to run when program becomes active """
 	def make_active (self):
@@ -1980,6 +2179,8 @@ class ProgramBase ():
 			self.shown.append({'since': int(self.active_since), 'duration': time_active})
 		self.core.data.set_dirty()
 
+		self.set_status_panel_state(False, force=True)
+
 		self.dirty     = False
 		self.first_run = True
 		self.gui.set_dirty_full()
@@ -1988,9 +2189,42 @@ class ProgramBase ():
 		if (self.is_active):
 			self.make_inactive()
 
-	""" by default, no draw calls are made """
+	""" by default, no draw calls are made except for the status panel """
 	def draw (self):
-		pass
+		# status panel bottom bar
+		if (self.status_panel_pos > -32):
+			self.gui.draw_surface(self.status_panel, o='left', x=0, y=self.status_panel_pos - 448, r=False)
+
+		if (self.status_open):
+			# number of photos in system
+			self.gui.draw_text(str(self.core.get_images_count()),       o='left', x=86, y=44 + self.po)
+
+			# storage (% available/used)
+			self.gui.draw_slider(o='left', x=86, y=128 + self.po, w=110, h=5, r=(self.core.get_disk_space() / 100.0), bg='subtle')
+			self.gui.draw_text(str(self.core.get_disk_space()) + "%",   o='left', x=86, y=106 + self.po)
+
+			# time
+			self.gui.draw_text(str(self.core.get_time()),               o='left', x=86, y=169 + self.po)
+
+			# distance (+plus sensor state)
+			self.gui.draw_slider(o='left', x=283, y=66 + self.po, w=110, h=5, r=(self.core.get_distance() / 6.5), bg='subtle')
+			self.gui.draw_text("{0:.2f} m".format(self.core.get_distance()), o='left', x=283, y=44 + self.po)
+
+			# memory usage
+			self.gui.draw_slider(o='left', x=283, y=128 + self.po, w=110, h=5, r=(self.core.get_memory_usage() / 100.0), bg='subtle')
+			self.gui.draw_text(str(self.core.get_memory_usage()) + "%", o='left', x=283, y=106 + self.po)
+
+			# temperature
+			self.gui.draw_text(str(self.core.get_temperature()) + "ºC", o='left', x=283, y=169 + self.po)
+			
+			# display brightness
+			self.gui.draw_slider(o='left', x=459, y=42 + self.po, w=341, h=24, r=(self.core.get_display_brightness() / 100.0), is_ui=True)
+			self.gui.draw_text(str(self.core.get_display_brightness()) + "%", o='left', x=459, y=44 + self.po, has_back=False)
+
+			# network (connected, IP)
+			self.gui.draw_text(self.current_address_text,      o='left', x=459, y=169 + self.po)
+			self.gui.draw_simple_image(self.address_qr_image, pos=(0.791, 0.313 + self.por))
+			
 
 	def get_max_time (self):
 		return self.max_time
@@ -2002,198 +2236,34 @@ class ProgramBase ():
 	def set_shown (self, shown=[]):
 		self.shown = list(shown)  # list() avoids referencing to inbound list object
 
+	def set_status_panel_state (self, panel_open=False, force=False):
+		if (panel_open and (self.status_open is False or force)):
+			self.status_panel_neutral_pos = 482 - 34
+		if (panel_open is False and (self.status_open or force)):
+			self.status_panel_neutral_pos = -34
+		if (panel_open != self.status_open):
+			self.status_open = panel_open
+			self.status_panel_active = True
+		if (force):
+			self.status_panel_pos = self.status_panel_neutral_pos
+
+	def toggle_status_panel (self):
+		self.set_status_panel_state(not self.status_open)
+
 
 class BlankScreen (ProgramBase):
 	def update (self):
 		# if user touches screen, get active again (so prepare to leave blank screen)
 		# make sure this program gets some time to settle in (ignore input first n seconds)
-		if (self.active_since < time.time() - 10 and self.core.input.state > self.core.input.REST):
+		if (self.status_open is False and self.active_since < time.time() - 10 and self.core.input.state == self.core.input.RELEASED_TAP):
 			self.core.request_switch()
 
 		# generally, do nothing (relies on GUI class providing a blank canvas on first run)
-		pass
-
-
-class StatusProgram (ProgramBase):
-	def __init__ (self, core=None):
-		super().__init__(core)
-
-		self.current_address        = ''
-		self.current_address_text   = ''
-		self.bottom_bar_pos         = 448
-		self.bottom_bar_neutral_pos = 448
-		self.bottom_bar_active      = False
-		self.status_open            = True
-
-		self.icon_clock       = self.gui.open_simple_image('assets/icon_clock_b.png')
-		self.icon_crosshair   = self.gui.open_simple_image('assets/icon_crosshair_b.png')
-		self.icon_dashboard   = self.gui.open_simple_image('assets/icon_dashboard_b.png')
-		self.icon_diskette    = self.gui.open_simple_image('assets/icon_diskette_b.png')
-		self.icon_half_moon   = self.gui.open_simple_image('assets/icon_half_moon_b.png')
-		self.icon_image       = self.gui.open_simple_image('assets/icon_image_b.png')
-		self.icon_sun         = self.gui.open_simple_image('assets/icon_sun_b.png')
-		self.icon_thermometer = self.gui.open_simple_image('assets/icon_thermometer_b.png')
-		self.icon_wifi        = self.gui.open_simple_image('assets/icon_wifi_b.png')
-		self.icon_power       = self.gui.open_simple_image('assets/icon_power_b.png')
-		self.button_128       = self.gui.open_simple_image('assets/button_128.png')
-
-		# init bottom bar surface (eases its reuse)
-		self.bottom_bar = pygame.Surface((800, 32))
-		self.bottom_bar.fill(self.gui.colors['support'])
-		# add identifier and version
-		self.gui.draw_text("status", o='left', x=40, y=6, fg='foreground', has_back=False, onto=self.bottom_bar)
-		self.gui.draw_text("v{0}".format(version), o='left', x=770, y=6, fg='support-dark', has_back=False, onto=self.bottom_bar)
-		# add handle icon
-		handle = self.gui.open_simple_image('assets/icon_more_r.png')
-		self.gui.draw_simple_image(handle, o='center', pos=(0.5, 0.5), onto=self.bottom_bar)
-
-	def update (self):
-		interactive           = False
-		now                   = time.time()
-		settle_bottom_bar_pos = False
-		
-		# is state interactive?
-		if (self.core.input.state > self.core.input.REST):
-			self.dirty  = True
-			interactive = True
-
-		# check if the bottom bar is used to drag
-		if (self.core.input.state >= self.core.input.DRAGGING):
-			relative_y = abs(self.core.input.drag[0].y - (self.bottom_bar_neutral_pos + 16))
-			if (relative_y < 22):  # 16px (half height of bar) + 6px margin
-				self.bottom_bar_active = True
-				self.bottom_bar_pos    = 480 * (self.core.input.pos.y / self.gui.display_size[1]) - 16
-				self.status_open       = (self.bottom_bar_pos > 0)
-
-				# once released, ensure the bottom bar goes either up or down
-				if (self.core.input.state == self.core.input.RELEASED_DRAG):
-					settle_bottom_bar_pos = True
-					
-					# decide on neutral position - depends on the edge that is closer (values + 2px margin)
-					self.bottom_bar_neutral_pos = 482 * round(self.core.input.pos.y / self.gui.display_size[1]) - 34
-			else:
-				if (self.bottom_bar_active):
-					settle_bottom_bar_pos = True
-		else:
-			if (self.bottom_bar_active):
-				settle_bottom_bar_pos = True
-
-		# bring bottom bar position back to default position, without abrupt change
-		if (self.bottom_bar_active and settle_bottom_bar_pos):
-			# get extra amount over neutral position, and take a portion of that off
-			self.bottom_bar_pos = self.bottom_bar_pos + 0.2 * (self.bottom_bar_neutral_pos - self.bottom_bar_pos)
-
-			# set the status screen status based on the bottom bar position
-			self.status_open = (self.bottom_bar_pos > 0)
-
-			# implement a stopping rule
-			if (abs(self.bottom_bar_pos - self.bottom_bar_neutral_pos) < 0.1):
-				self.bottom_bar_pos = self.bottom_bar_neutral_pos
-				self.bottom_bar_active = False
-
-		# if the status panel is open, update its UI code
-		if (self.status_open):
-			# calculate y-position offset due to moving bar
-			self.po  = round(self.bottom_bar_pos - 448)  # in pixels
-			self.por = self.po / 480                     # relative: [0..1]
-			
-			# check if input is given to adjust screen brightness
-			if (self.core.input.state >= self.core.input.DRAGGING):
-				print(self.core.input.pos.x, self.core.input.pos.y)
-				# first check if all this actually started close to the slider
-				start_x = self.core.input.drag[0].x
-				start_y = abs(self.core.input.drag[0].y - (54 + self.po))  # 54 is middle of slider y-position
-				if (start_x > 459 and start_y < 15):
-					# 459 is left edge, 331 is 341 range - 10 edge margin (so it's easier to get 100%)
-					value = round(100 * max(min((self.core.input.pos.x - 459) / 331, 1), 0))
-					self.core.set_display_brightness(value, True)
-					print(value)
-
-			# also check for button presses
-			if (self.core.input.state == self.core.input.RELEASED_HOLD):
-				# check for power button
-				if (self.core.input.drag[0].x > 670 and self.core.input.drag[0].x < 720
-					and self.core.input.drag[0].y > (330 + self.po) and self.core.input.drag[0].y < (380 + self.po)):
-					self.core.set_exit(shutdown=True)
-				# version number doubles as secret exit core button
-				elif (self.core.input.drag[0].x > 760 and self.core.input.drag[0].y > (450 + self.po)):
-					self.core.set_exit()
-
-			# check if IP is still current
-			new_address = self.core.network.get_ip_address()
-			if (new_address != self.current_address):
-				if (new_address is False):
-					self.current_address      = 'project.sinds1984.nl'
-					self.current_address_text = 'No network available'
-				else:
-					self.current_address      = new_address
-					self.current_address_text = 'IP: ' + new_address
-				self.address_qr_image = self.gui.get_qrcode_image('http://' + self.current_address)
-
-		# update on change or every 1/4 second
-		if (self.bottom_bar_active):
-			super().update(full=True)
-		elif (self.dirty or now > self.last_update + 0.25):
-			super().update()  # this calls for update
+		super().update(ignore=True)
 
 	def draw (self):
-		# bottom bar
-		self.gui.draw_surface(self.bottom_bar, o='left', x=0, y=self.bottom_bar_pos, r=False)
-
-		if (self.status_open):
-			# number of photos in system
-			self.gui.draw_simple_image(self.icon_image, pos=(0.05, 0.08 + self.por))
-			self.gui.draw_text(str(self.core.get_images_count()),       o='left', x=86, y=44 + self.po)
-
-			# storage (% available/used)
-			self.gui.draw_simple_image(self.icon_diskette, pos=(0.05, 0.21 + self.por))
-			self.gui.draw_slider(o='left', x=86, y=128 + self.po, w=110, h=5, r=(self.core.get_disk_space() / 100.0), bg='subtle')
-			self.gui.draw_text(str(self.core.get_disk_space()) + "%",   o='left', x=86, y=106 + self.po)
-
-			# time
-			self.gui.draw_simple_image(self.icon_clock, pos=(0.05, 0.34 + self.por))
-			self.gui.draw_text(str(self.core.get_time()),               o='left', x=86, y=169 + self.po)
-
-			# distance (+plus sensor state)
-			self.gui.draw_simple_image(self.icon_crosshair, pos=(0.295, 0.08 + self.por))
-			self.gui.draw_slider(o='left', x=283, y=66 + self.po, w=110, h=5, r=(self.core.get_distance() / 6.5), bg='subtle')
-			self.gui.draw_text("{0:.2f} m".format(self.core.get_distance()), o='left', x=283, y=44 + self.po)
-
-			# memory usage
-			self.gui.draw_simple_image(self.icon_dashboard, pos=(0.295, 0.21 + self.por))
-			self.gui.draw_slider(o='left', x=283, y=128 + self.po, w=110, h=5, r=(self.core.get_memory_usage() / 100.0), bg='subtle')
-			self.gui.draw_text(str(self.core.get_memory_usage()) + "%", o='left', x=283, y=106 + self.po)
-
-			# temperature
-			self.gui.draw_simple_image(self.icon_thermometer, pos=(0.295, 0.34 + self.por))
-			self.gui.draw_text(str(self.core.get_temperature()) + "ºC", o='left', x=283, y=169 + self.po)
-			
-			# display brightness
-			self.gui.draw_simple_image(self.icon_sun, pos=(0.52, 0.08 + self.por))
-			self.gui.draw_slider(o='left', x=459, y=42 + self.po, w=341, h=24, r=(self.core.get_display_brightness() / 100.0), is_ui=True)
-			self.gui.draw_text(str(self.core.get_display_brightness()) + "%", o='left', x=459, y=44 + self.po, has_back=False)
-
-			# guidance for adding photos text
-			self.gui.draw_text('To add photos, go to the address below', o='left', x=459, y=100 + self.po)
-			self.gui.draw_text('or scan the QR code with your phone',    o='left', x=459, y=120 + self.po)
-
-			# network (connected, IP)
-			self.gui.draw_simple_image(self.icon_wifi, pos=(0.52, 0.34 + self.por))
-			self.gui.draw_text(self.current_address_text,      o='left', x=459, y=169 + self.po)
-			self.gui.draw_simple_image(self.address_qr_image, pos=(0.791, 0.313 + self.por))
-
-			# buttons
-			self.gui.draw_simple_image(self.button_128, pos=(0.05,  0.6 + self.por))
-			self.gui.draw_simple_image(self.button_128, pos=(0.235, 0.6 + self.por))
-			self.gui.draw_simple_image(self.button_128, pos=(0.42,  0.6 + self.por))
-			self.gui.draw_simple_image(self.button_128, pos=(0.605, 0.6 + self.por))
-			self.gui.draw_simple_image(self.button_128, pos=(0.79,  0.6 + self.por))
-
-			self.gui.draw_simple_image(self.icon_half_moon, o='center', pos=(0.13,  0.734 + self.por))
-			self.gui.draw_simple_image(self.icon_half_moon, o='center', pos=(0.315, 0.734 + self.por))
-			self.gui.draw_simple_image(self.icon_half_moon, o='center', pos=(0.50,  0.734 + self.por))
-			self.gui.draw_simple_image(self.icon_half_moon, o='center', pos=(0.685, 0.734 + self.por))
-			self.gui.draw_simple_image(self.icon_power,     o='center', pos=(0.87,  0.734 + self.por))
+		# call draw function to allow drawing default elements if any
+		super().draw()
 
 
 class DualDisplay (ProgramBase):
@@ -2244,155 +2314,158 @@ class DualDisplay (ProgramBase):
 		return True
 
 	def update (self):
-		interactive = False
-		now         = time.time()
-		check_for_swap_over = False
-		settle_line_pos     = False
+		if (self.first_run or self.status_open is False):
+			interactive = False
+			now         = time.time()
+			check_for_swap_over = False
+			settle_line_pos     = False
 
-		# is state interactive?
-		if (self.core.input.state > self.core.input.REST):
-			self.dirty  = True
-			interactive = True
+			# is state interactive?
+			if (self.core.input.state > self.core.input.REST):
+				self.dirty  = True
+				interactive = True
 
-		# pick position of line, based on input
-		# if user drag action started near the line, drag it and let line follow
-		if (self.core.input.state >= self.core.input.DRAGGING):
-			# first check if all this actually started close to the line's resting position
-			start_x = abs(self.core.input.drag[0].x / self.gui.display_size[0] - self.neutral_pos)
-			if (start_x < 0.06):
-				self.line_pos = self.core.input.pos.x / self.gui.display_size[0]
+			# pick position of line, based on input
+			# if user drag action started near the line, drag it and let line follow
+			if (self.core.input.state >= self.core.input.DRAGGING):
+				# first check if all this actually started close to the line's resting position
+				start_x = abs(self.core.input.drag[0].x / self.gui.display_size[0] - self.neutral_pos)
+				if (start_x < 0.06):
+					self.line_pos = self.core.input.pos.x / self.gui.display_size[0]
 
-				if (self.core.input.state == self.core.input.RELEASED_DRAG):
-					# begin rating, feedback, swap over
-					check_for_swap_over = True
+					if (self.core.input.state == self.core.input.RELEASED_DRAG):
+						# begin rating, feedback, swap over
+						check_for_swap_over = True
+				else:
+					settle_line_pos = True
 			else:
 				settle_line_pos = True
-		else:
-			settle_line_pos = True
-		
-		# bring line position back to normal, without abrupt change
-		if (settle_line_pos):
-			# decide on neutral position - depends on ratings of images
-			# each image's rating can sway by [-.1, +.1]
-			if (self.im[0]['image'] is not None and self.im[1]['image'] is not None):
-				self.neutral_pos = 0.5 + self.im[0]['image'].rate / 10 - self.im[1]['image'].rate / 10
-			# get extra amount over neutral position, and take a portion of that off
-			self.line_pos = self.line_pos + 0.2 * (self.neutral_pos - self.line_pos)
-
-		# picker position depends on line
-		self.picker_plus_pos = self.neutral_pos + 0.8 * (self.line_pos - self.neutral_pos)
-		self.picker_min_pos  = self.neutral_pos + 1.2 * (self.line_pos - self.neutral_pos)
-
-		# if user indicates a clear preference, go with that
-		# this means a drag of the line crosses a threshold (position away from centre)
-		if (self.line_pos < 0.15 or self.line_pos > 0.85):
-			# set up for that
-			self.preferred_image = int(self.line_pos < self.neutral_pos)  # 1 or 0, if line > 0.5
-
-			# do actual rating and swap
-			if (check_for_swap_over):
-				# rate both images
-				self.im[0]['image'].do_rate(self.preferred_image == 0)  # True if line is far right, False otherwise
-				self.im[1]['image'].do_rate(self.preferred_image == 1)  # vice versa, True if far left
-
-				# log this action
-				log_value = self.im[0]['image'].file
-				log_value += (' > ',' < ')[self.preferred_image]
-				log_value += self.im[1]['image'].file
-				self.core.data.log_action('dd.rate', log_value)
-
-				# give feedback (both for rating, and swap)
-				# get one image to fade quickly and swap over
-				self.im[ abs(self.preferred_image - 1) ]['swap'] = True
-				self.last_swap = now
-
-			self.dirty = True
-		else:
-			self.preferred_image = None
-
-		# make sure any meaningful change in line position is registered as change
-		# cutoff value is ~ 1.0/800
-		if (abs(self.line_pos - self.last_line_pos) > 0.0015):
-			self.last_line_pos = self.line_pos
-			self.dirty = True
-
-		# decide if line should be shown
-		new_line_width = max(min(20 / pow(self.core.get_distance() + 0.5, 3), 6), 0)
-		if (interactive):
-			# make it fade in
-			new_line_width = min(self.line_width + 1, 6)
-		elif (new_line_width < 0.8):  # no need to consider smaller than this
-			new_line_width = 0
-		# only update when necessary
-		if (new_line_width != self.line_width):
-			self.line_width = new_line_width
 			
-			self.dirty = True
-		
-		# decide if picker should be shown
-		new_picker_alpha = max(min(-10/3 * self.core.get_distance() + 8/3, 1), 0)
-		if (interactive):
-			# make it fade in
-			new_picker_alpha = min(self.picker_alpha + 0.1, 1)
-		elif (new_picker_alpha < .004):  # no need to consider smaller than this
-			new_picker_alpha = 0
-		# only update when necessary
-		if (new_picker_alpha != self.picker_alpha):
-			self.picker_alpha = new_picker_alpha
-			
-			self.dirty = True
+			# bring line position back to normal, without abrupt change
+			if (settle_line_pos):
+				# decide on neutral position - depends on ratings of images
+				# each image's rating can sway by [-.1, +.1]
+				if (self.im[0]['image'] is not None and self.im[1]['image'] is not None):
+					self.neutral_pos = 0.5 + self.im[0]['image'].rate / 10 - self.im[1]['image'].rate / 10
+				# get extra amount over neutral position, and take a portion of that off
+				self.line_pos = self.line_pos + 0.2 * (self.neutral_pos - self.line_pos)
 
-		# loop over two image slots to assign, swap, fade, etc.
-		for index, i in enumerate(self.im):
-			if (self.first_run):
-				# make sure there is an image
-				i['image']     = self.core.images.get_next(rated=True)
-				i['image_new'] = self.core.images.get_next(rated=True)
-				i['since']     = now
-				if (index == 1):
-					i['max_time'] *= 1.5
+			# picker position depends on line
+			self.picker_plus_pos = self.neutral_pos + 0.8 * (self.line_pos - self.neutral_pos)
+			self.picker_min_pos  = self.neutral_pos + 1.2 * (self.line_pos - self.neutral_pos)
 
-			# if an image has been on long enough, swap over
-			# but don't do so if user is interacting with the device
-			if (i['swap'] is False and interactive):
-				# extend max time such that it lasts until now + 2 seconds (plus, take into account switch time)
-				if (i['since'] + i['max_time'] < now + self.switch_time + 2):
-					i['max_time'] = (now + self.switch_time + 2) - i['since']
-					# also set alpha in case it was about to switch
-					i['alpha']    = 0
-			elif (i['swap'] or i['since'] < now - i['max_time'] + self.switch_time):
-				# set alpha for new image fade-in
-				i['alpha'] = max(min((now - (i['since'] + i['max_time'] - self.switch_time)) / self.switch_time, 1), 0)
+			# if user indicates a clear preference, go with that
+			# this means a drag of the line crosses a threshold (position away from centre)
+			if (self.line_pos < 0.15 or self.line_pos > 0.85):
+				# set up for that
+				self.preferred_image = int(self.line_pos < self.neutral_pos)  # 1 or 0, if line > 0.5
 
-				# once time for current image is up, switch over
-				if (i['swap'] or i['since'] < now - i['max_time']):
-					# unload current image
-					if (i['image'] is not None):
-						self.core.data.set_dirty()
-						# free memory and report time since it appeared
-						i['image'].unload( i['since'] )
-					
-					# reassign and reset timers, etc.
-					i['swap']      = False
-					i['image']     = i['image_new']
-					i['image_new'] = self.core.images.get_next(rated=True)  # decide on new image early
-					i['alpha']     = 0
-					i['since']     = now
-					i['max_time']  = self.default_time
-					
-					# adjust max time in case the two sides are too close together for swapping
-					# ideal is for each side to swap at halfway duration of the other
-					if (index == 1):
-						t1 = self.im[0]['since'] + self.im[0]['max_time']
-						t2 = self.im[1]['since'] + self.im[1]['max_time']
-						if (abs(t1-t2) < self.default_time / 2):
-							i['max_time'] += 1
+				# do actual rating and swap
+				if (check_for_swap_over):
+					# rate both images
+					self.im[0]['image'].do_rate(self.preferred_image == 0)  # True if line is far right, False otherwise
+					self.im[1]['image'].do_rate(self.preferred_image == 1)  # vice versa, True if far left
+
+					# log this action
+					log_value = self.im[0]['image'].file
+					log_value += (' > ',' < ')[self.preferred_image]
+					log_value += self.im[1]['image'].file
+					self.core.data.log_action('dd.rate', log_value)
+
+					# give feedback (both for rating, and swap)
+					# get one image to fade quickly and swap over
+					self.im[ abs(self.preferred_image - 1) ]['swap'] = True
+					self.last_swap = now
+
+				self.dirty = True
+			else:
+				self.preferred_image = None
+
+			# make sure any meaningful change in line position is registered as change
+			# cutoff value is ~ 1.0/800
+			if (abs(self.line_pos - self.last_line_pos) > 0.0015):
+				self.last_line_pos = self.line_pos
+				self.dirty = True
+
+			# decide if line should be shown
+			new_line_width = max(min(20 / pow(self.core.get_distance() + 0.5, 3), 6), 0)
+			if (interactive):
+				# make it fade in
+				new_line_width = min(self.line_width + 1, 6)
+			elif (new_line_width < 0.8):  # no need to consider smaller than this
+				new_line_width = 0
+			# only update when necessary
+			if (new_line_width != self.line_width):
+				self.line_width = new_line_width
 				
 				self.dirty = True
+			
+			# decide if picker should be shown
+			new_picker_alpha = max(min(-10/3 * self.core.get_distance() + 8/3, 1), 0)
+			if (interactive):
+				# make it fade in
+				new_picker_alpha = min(self.picker_alpha + 0.1, 1)
+			elif (new_picker_alpha < .004):  # no need to consider smaller than this
+				new_picker_alpha = 0
+			# only update when necessary
+			if (new_picker_alpha != self.picker_alpha):
+				self.picker_alpha = new_picker_alpha
+				
+				self.dirty = True
+
+			# loop over two image slots to assign, swap, fade, etc.
+			for index, i in enumerate(self.im):
+				if (self.first_run):
+					# make sure there is an image
+					i['image']     = self.core.images.get_next(rated=True)
+					i['image_new'] = self.core.images.get_next(rated=True)
+					i['since']     = now
+					if (index == 1):
+						i['max_time'] *= 1.5
+
+				# if an image has been on long enough, swap over
+				# but don't do so if user is interacting with the device
+				if (i['swap'] is False and interactive):
+					# extend max time such that it lasts until now + 2 seconds (plus, take into account switch time)
+					if (i['since'] + i['max_time'] < now + self.switch_time + 2):
+						i['max_time'] = (now + self.switch_time + 2) - i['since']
+						# also set alpha in case it was about to switch
+						i['alpha']    = 0
+				elif (i['swap'] or i['since'] < now - i['max_time'] + self.switch_time):
+					# set alpha for new image fade-in
+					i['alpha'] = max(min((now - (i['since'] + i['max_time'] - self.switch_time)) / self.switch_time, 1), 0)
+
+					# once time for current image is up, switch over
+					if (i['swap'] or i['since'] < now - i['max_time']):
+						# unload current image
+						if (i['image'] is not None):
+							self.core.data.set_dirty()
+							# free memory and report time since it appeared
+							i['image'].unload( i['since'] )
+						
+						# reassign and reset timers, etc.
+						i['swap']      = False
+						i['image']     = i['image_new']
+						i['image_new'] = self.core.images.get_next(rated=True)  # decide on new image early
+						i['alpha']     = 0
+						i['since']     = now
+						i['max_time']  = self.default_time
+						
+						# adjust max time in case the two sides are too close together for swapping
+						# ideal is for each side to swap at halfway duration of the other
+						if (index == 1):
+							t1 = self.im[0]['since'] + self.im[0]['max_time']
+							t2 = self.im[1]['since'] + self.im[1]['max_time']
+							if (abs(t1-t2) < self.default_time / 2):
+								i['max_time'] += 1
+					
+					self.dirty = True
 
 		# indicate update is necessary, if so, always do full to avoid glitches
 		if (self.dirty):
 			super().update(full=True)
+		else:
+			super().update(ignore=True)
 
 	def make_active (self):
 		# draw the picker surfaces in advance for later reference
@@ -2500,6 +2573,9 @@ class DualDisplay (ProgramBase):
 				self.gui.draw_surface(self.picker_min_surf_a,  x=self.picker_min_pos,  y=0.5, a=self.picker_alpha)
 				self.gui.draw_surface(self.picker_plus_surf_a, x=self.picker_plus_pos, y=0.5, a=self.picker_alpha)
 
+		# call draw function to allow drawing default elements if any
+		super().draw()
+
 
 class PhotoSoup (ProgramBase):
 	def __init__ (self, core=None):
@@ -2525,199 +2601,202 @@ class PhotoSoup (ProgramBase):
 		return True
 
 	def update (self):
-		now = time.time()
+		if (self.first_run or self.status_open is False):
+			now = time.time()
 
-		# determine base factor - - - - - - - - - - - - - - - - - - -
+			# determine base factor - - - - - - - - - - - - - - - - - - -
 
-		# base factor is dependent on the number of images that have entered view
-		# it will only increase significantly once images are reduced
-		"""
-		GUIDELINE:
-		.8 ~  3 images
-		.6 ~  5 images
-		.4 ~  9 images
-		.3 ~ 11 images
-		"""
-		# image factor --- simple linear relation to approximate guide values
-		# use a minimum number of images of one, to avoid divide by zero
-		self.base_constant = 2.3 / max(len(self.images),1) + 0.1
+			# base factor is dependent on the number of images that have entered view
+			# it will only increase significantly once images are reduced
+			"""
+			GUIDELINE:
+			.8 ~  3 images
+			.6 ~  5 images
+			.4 ~  9 images
+			.3 ~ 11 images
+			"""
+			# image factor --- simple linear relation to approximate guide values
+			# use a minimum number of images of one, to avoid divide by zero
+			self.base_constant = 2.3 / max(len(self.images),1) + 0.1
 
-		# time factor --- base factor gets smaller as the time since the last interaction gets longer
-		# uses the formula 60/x - 1, with outcome limited to [-1,0.5]
-		# (although lower limit of formula only approaches -1)
-		self.base_constant += 0.15 * min(max(60.0 / (now - self.core.get_last_ix()) - 1, -0.7), 0.5)
+			# time factor --- base factor gets smaller as the time since the last interaction gets longer
+			# uses the formula 60/x - 1, with outcome limited to [-1,0.5]
+			# (although lower limit of formula only approaches -1)
+			self.base_constant += 0.15 * min(max(60.0 / (now - self.core.get_last_ix()) - 1, -0.7), 0.5)
 
-		# distance factor --- base factor gets increased with low distance
-		# uses the formula -.8*x + 1.2, with limits [0, 0.5]
-		self.base_constant += 0.3 * min(max(-0.8 * self.core.get_distance() + 1.2, 0), 0.5)
+			# distance factor --- base factor gets increased with low distance
+			# uses the formula -.8*x + 1.2, with limits [0, 0.5]
+			self.base_constant += 0.3 * min(max(-0.8 * self.core.get_distance() + 1.2, 0), 0.5)
 
-		# adjust base size (rescale from base factor, with limits to avoid sizing errors)
-		new_size = min(max(0.8 * self.base_constant, 0.1), 2)
-		# this line makes sure the base size gradually moves from one value to another
-		self.base_size = self.base_size + 0.2 * (new_size - self.base_size)
+			# adjust base size (rescale from base factor, with limits to avoid sizing errors)
+			new_size = min(max(0.8 * self.base_constant, 0.1), 2)
+			# this line makes sure the base size gradually moves from one value to another
+			self.base_size = self.base_size + 0.2 * (new_size - self.base_size)
 
-		# adjust goal number of images (depends on time since last interaction)
-		# also, this won't be done if user interaction was recent
-		if (self.core.get_last_ix() < now - self.time_to_pass_sans_ix and self.last_image_addition < now - self.time_before_addition):
-			# add one, but have an upper limit
-			self.goal_num_images = min(self.goal_num_images + 1, self.max_num_images)
+			# adjust goal number of images (depends on time since last interaction)
+			# also, this won't be done if user interaction was recent
+			if (self.core.get_last_ix() < now - self.time_to_pass_sans_ix and self.last_image_addition < now - self.time_before_addition):
+				# add one, but have an upper limit
+				self.goal_num_images = min(self.goal_num_images + 1, self.max_num_images)
 
-		# handle user interactivity - - - - - - - - - - - - - - - - -
-		
-		if (self.core.input.DRAGGING <= self.core.input.state < self.core.input.RELEASED):
-			if (self.active_image is None):
-				# 1. check if dragging started over image
-				# find image closest to drag position
-				closest_distance = 9999  # very high number that's sure to be met
-				closest_image    = None
-				for i in self.images:
-					distance = self.get_distance(self.core.input.pos, i['v'])
-					# if closest so far and distance < image radius, we have a match
-					if (distance < closest_distance and distance < self.get_diameter(i)/2.0):
-						closest_distance = distance
-						closest_image    = i
+			# handle user interactivity - - - - - - - - - - - - - - - - -
+			
+			if (self.core.input.DRAGGING <= self.core.input.state < self.core.input.RELEASED):
+				if (self.active_image is None):
+					# 1. check if dragging started over image
+					# find image closest to drag position
+					closest_distance = 9999  # very high number that's sure to be met
+					closest_image    = None
+					for i in self.images:
+						distance = self.get_distance(self.core.input.pos, i['v'])
+						# if closest so far and distance < image radius, we have a match
+						if (distance < closest_distance and distance < self.get_diameter(i)/2.0):
+							closest_distance = distance
+							closest_image    = i
 
-				if (closest_image is not None):
-					self.active_image = closest_image
-					self.active_image['user_control'] = True
+					if (closest_image is not None):
+						self.active_image = closest_image
+						self.active_image['user_control'] = True
+						self.active_image['user_last_ix'] = now
+
+						# also put this image to the end of the images list, so it gets drawn on top
+						swapIndex = self.images.index(self.active_image)
+						self.images[-1], self.images[swapIndex] = self.images[swapIndex], self.images[-1]
+				else:
+					# so we already have an active image
 					self.active_image['user_last_ix'] = now
 
-					# also put this image to the end of the images list, so it gets drawn on top
-					swapIndex = self.images.index(self.active_image)
-					self.images[-1], self.images[swapIndex] = self.images[swapIndex], self.images[-1]
-			else:
-				# so we already have an active image
-				self.active_image['user_last_ix'] = now
-
-				# 2. pull the center of that image towards user position (image follows touch)
-				# set angle towards touch position
-				self.active_image['v'].z = self.get_angle(self.active_image['v'], self.core.input.pos)
-				# set speed to recent touch movement magnitude
-				self.active_image['v'].w = self.core.input.pos.w
+					# 2. pull the center of that image towards user position (image follows touch)
+					# set angle towards touch position
+					self.active_image['v'].z = self.get_angle(self.active_image['v'], self.core.input.pos)
+					# set speed to recent touch movement magnitude
+					self.active_image['v'].w = self.core.input.pos.w
+				
+			elif (self.core.input.state >= self.core.input.RELEASED):
+				if (self.active_image is not None):
+					# 3. once drag is released, let angle and trajectory be the same as recent trajectory
+					# ^ so don't update here
+					self.active_image['user_control'] = False
+					self.active_image = None
 			
-		elif (self.core.input.state >= self.core.input.RELEASED):
-			if (self.active_image is not None):
-				# 3. once drag is released, let angle and trajectory be the same as recent trajectory
-				# ^ so don't update here
-				self.active_image['user_control'] = False
-				self.active_image = None
-		
-		# image updates below - - - - - - - - - - - - - - - - - - - -
+			# image updates below - - - - - - - - - - - - - - - - - - - -
 
-		# if goal has increased, add an image slot
-		if (self.goal_num_images > len(self.images)):
-			self.images.append({
-				'image'       : None,
-				'since'       : now,
-				'v'           : Vector4(0, 0, 0, 0),
-				'size'        : 1,
-				'user_control': False,  # False
-				'user_last_ix': 0       # timestamp of last interaction
-			})
-			# keep track of time
-			self.last_image_addition = now
+			# if goal has increased, add an image slot
+			if (self.goal_num_images > len(self.images)):
+				self.images.append({
+					'image'       : None,
+					'since'       : now,
+					'v'           : Vector4(0, 0, 0, 0),
+					'size'        : 1,
+					'user_control': False,  # False
+					'user_last_ix': 0       # timestamp of last interaction
+				})
+				# keep track of time
+				self.last_image_addition = now
 
-		# do per image updating
-		for i in self.images:
-			# if new or moved out of screen range, renew
-			if (i['image'] is None or not self.is_on_sceen(i)):
-				if (self.goal_num_images >= len(self.images)):
-					# cleanup if possible
-					if (i['image'] is not None):
-						i['image'].unload( i['since'] )  # report time since it appeared
+			# do per image updating
+			for i in self.images:
+				# if new or moved out of screen range, renew
+				if (i['image'] is None or not self.is_on_sceen(i)):
+					if (self.goal_num_images >= len(self.images)):
+						# cleanup if possible
+						if (i['image'] is not None):
+							i['image'].unload( i['since'] )  # report time since it appeared
 
-					# a regular, non-user-touched image will just disappear and be renewed
-					# an image that was recently touched (< n seconds ago) will disappear without replacement
-					if (now - i['user_last_ix'] < 10):
-						# avoid replacement by reducing desired number of images
-						self.goal_num_images = max(self.goal_num_images - 1, self.min_num_images)
-						
-						# also rate this image down
-						i['image'].do_rate(False, 0.1)
+						# a regular, non-user-touched image will just disappear and be renewed
+						# an image that was recently touched (< n seconds ago) will disappear without replacement
+						if (now - i['user_last_ix'] < 10):
+							# avoid replacement by reducing desired number of images
+							self.goal_num_images = max(self.goal_num_images - 1, self.min_num_images)
+							
+							# also rate this image down
+							i['image'].do_rate(False, 0.1)
 
-						# to maintain balance, the other images currently visible get uprated slightly
-						uprating = 0.1 / (len(self.images) - 1)
-						for other_img in self.images:
-							if (other_img is not i):
-								other_img['image'].do_rate(True, uprating)
+							# to maintain balance, the other images currently visible get uprated slightly
+							uprating = 0.1 / (len(self.images) - 1)
+							for other_img in self.images:
+								if (other_img is not i):
+									other_img['image'].do_rate(True, uprating)
 
-						# log this action
-						self.core.data.log_action('ps.flung', '{0}, amid {1} images'.format(i['image'].file, len(self.images)))
+							# log this action
+							self.core.data.log_action('ps.flung', '{0}, amid {1} images'.format(i['image'].file, len(self.images)))
 
-						# remove this image slot (mimics code below)
+							# remove this image slot (mimics code below)
+							i['image'].unload( i['since'] )  # report time since it appeared
+							self.images.remove(i)
+
+						else:
+							# renew this image slot
+							i['image'] = self.core.images.get_next()
+							i['since'] = now
+							# set x, y, direction, speed
+							i['v'].set(
+								random.random() * self.dsize[0],
+								random.random() * self.dsize[1],
+								2 * pi * random.random(),
+								max(1.3 * random.random(), 0.15))
+					else:
+						# remove this image slot to free memory
 						i['image'].unload( i['since'] )  # report time since it appeared
 						self.images.remove(i)
 
-					else:
-						# renew this image slot
-						i['image'] = self.core.images.get_next()
-						i['since'] = now
-						# set x, y, direction, speed
-						i['v'].set(
-							random.random() * self.dsize[0],
-							random.random() * self.dsize[1],
-							2 * pi * random.random(),
-							max(1.3 * random.random(), 0.15))
-				else:
-					# remove this image slot to free memory
-					i['image'].unload( i['since'] )  # report time since it appeared
-					self.images.remove(i)
-
-				self.dirty = True
-			# else, update the current image's position, size, etc.
-			else:
-				# adjust the size
-				i['size'] = 1 + (i['image'].rate / 4.0)  # potential range is thus [0.75, 1.25]
-
-				# non-user-controlled images update based on relative position to other images
-				if (not i['user_control']):
-					# adjust angle if far from center (aim to pull it in to avoid images huddling at edge)
-					# this is primarily a problem with large images ~ a small number
-					if (len(self.images) <= 4):
-						# get angle towards the center of screen
-						center_angle    = self.get_angle(i['v'], self.center)
-						# distance from center -> factor of the current angle's adjustment to the center angle
-						center_distance = self.get_distance(i['v'], self.center)
-						# only continue to adjust if distance is close to edge
-						if (center_distance > 0.9 * self.dsize[1]):
-							# factor is limited to .01 to avoid abrupt changes
-							center_factor   = min(max(1.0 * center_distance / self.dsize[1], 0), 0.01)
-							# update the angle accordingly
-							i['v'].z = (1 - center_factor) * i['v'].z + center_factor * center_angle
-
-				# for all images, calculate the base vector (with magnitude w, angle z)
-				vi_x = i['v'].w * cos(i['v'].z)
-				vi_y = i['v'].w * sin(i['v'].z) * -1  # -1 because -y is up
-
-				# calculate influence of other images
-				if (not i['user_control']):
-					"""
-					each other image has influence, through attraction Fa and repulsion Fr
-					those two forces are from x,y towards the other x,y with radian angle ß and -ß
-					so the sum of the two forces influence the default force
-					"""
-					for img in self.images:
-						if (img is not i):
-							# calculate influence
-							f = self.get_force_attraction(i, img) - self.get_force_repulsion(i, img)
-							a = self.get_angle(i['v'], img['v'])
-
-							# add this vector to the base
-							vi_x += f * cos(a)
-							vi_y += f * sin(a) * -1
-							#print(round(vi_x), round(vi_y), f, a)
-
-				# for all, add the resultant vector to get the new position
-				#print('3', vi_x, vi_y)
-				i['v'].x += vi_x
-				i['v'].y += vi_y
-
-				if (vi_x != 0 or vi_y != 0):
 					self.dirty = True
+				# else, update the current image's position, size, etc.
+				else:
+					# adjust the size
+					i['size'] = 1 + (i['image'].rate / 4.0)  # potential range is thus [0.75, 1.25]
+
+					# non-user-controlled images update based on relative position to other images
+					if (not i['user_control']):
+						# adjust angle if far from center (aim to pull it in to avoid images huddling at edge)
+						# this is primarily a problem with large images ~ a small number
+						if (len(self.images) <= 4):
+							# get angle towards the center of screen
+							center_angle    = self.get_angle(i['v'], self.center)
+							# distance from center -> factor of the current angle's adjustment to the center angle
+							center_distance = self.get_distance(i['v'], self.center)
+							# only continue to adjust if distance is close to edge
+							if (center_distance > 0.9 * self.dsize[1]):
+								# factor is limited to .01 to avoid abrupt changes
+								center_factor   = min(max(1.0 * center_distance / self.dsize[1], 0), 0.01)
+								# update the angle accordingly
+								i['v'].z = (1 - center_factor) * i['v'].z + center_factor * center_angle
+
+					# for all images, calculate the base vector (with magnitude w, angle z)
+					vi_x = i['v'].w * cos(i['v'].z)
+					vi_y = i['v'].w * sin(i['v'].z) * -1  # -1 because -y is up
+
+					# calculate influence of other images
+					if (not i['user_control']):
+						"""
+						each other image has influence, through attraction Fa and repulsion Fr
+						those two forces are from x,y towards the other x,y with radian angle ß and -ß
+						so the sum of the two forces influence the default force
+						"""
+						for img in self.images:
+							if (img is not i):
+								# calculate influence
+								f = self.get_force_attraction(i, img) - self.get_force_repulsion(i, img)
+								a = self.get_angle(i['v'], img['v'])
+
+								# add this vector to the base
+								vi_x += f * cos(a)
+								vi_y += f * sin(a) * -1
+								#print(round(vi_x), round(vi_y), f, a)
+
+					# for all, add the resultant vector to get the new position
+					#print('3', vi_x, vi_y)
+					i['v'].x += vi_x
+					i['v'].y += vi_y
+
+					if (vi_x != 0 or vi_y != 0):
+						self.dirty = True
 
 		# indicate update is necessary, if so, always do full to avoid glitches
 		if (self.dirty):
 			super().update(full=True)
+		else:
+			super().update(ignore=True)
 
 	def make_inactive (self):
 		# reset variables to None to free memory
@@ -2765,6 +2844,9 @@ class PhotoSoup (ProgramBase):
 			ypos = i['v'].y / self.dsize[1]
 			size = self.get_diameter(i)
 			self.gui.draw_image(i['image'], pos=(xpos, ypos), size=(size, size), rs=False, ci=True)
+
+		# call draw function to allow drawing default elements if any
+		super().draw()
 
 
 # ----- RUN AS MAIN ------------------------------------------------------------

@@ -153,7 +153,7 @@ The source code and models are available under a [CC-BY-NC 3.0 license][14]. You
 
 Note that [DropzoneJS][15] files are included in this repository for convenience but remain under the original MIT license.
 
-Icons on the status pane by [hirschwolf][16] from Flaticon are included in this repository for convenience but remain under the original Flaticon Basic license.
+Icons on the status pane by [hirschwolf][16] and [Freepik][17] from Flaticon are included in this repository for convenience but remain under the original Flaticon Basic license.
 
 ## Known issues and possible improvements for future revisions
 - Uploading photos:
@@ -180,6 +180,7 @@ Icons on the status pane by [hirschwolf][16] from Flaticon are included in this 
 [14]:	https://creativecommons.org/licenses/by-nc/3.0/au/
 [15]:	http://www.dropzonejs.com/
 [16]:	https://www.flaticon.com/authors/hirschwolf
+[17]:	https://www.flaticon.com/authors/freepik
 
 [image-1]:	info/phototype-overview.png
 [image-2]:	info/wiring-schematic.png
