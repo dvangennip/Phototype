@@ -68,6 +68,7 @@ def main ():
 
 		# program stays in this loop unless called for exit
 		while (True):
+			t0 = time.time()
 			core.update()
 				
 			# exit flag set?
@@ -76,7 +77,10 @@ def main ():
 				break
 			else:
 				# pause between frames
-				pygame.time.wait(50)
+				t1 = time.time()
+				dt = round((t1 - t0) * 1000)  # in millis
+				# pause for a minimum of 10 ms and max of 40 ms (25fps)
+				pygame.time.wait( max(40 - dt, 10) )
 	except Exception as e:
 		with open('errors.log', 'a') as f:
 			traceback.print_exc(file=f)  #sys.stdout
@@ -1197,7 +1201,7 @@ class Image ():
 					img = self.make_circular(img)
 				else:
 					img = self.scale(size, fill_box, fit_to_square, smooth)
-				self.image[size_string] = img.convert_alpha()
+				self.image[size_string] = img.convert()
 				# ready to return now
 
 		# if pure blacks need to be removed, do it here after rescaling (smaller file = quicker)
@@ -1834,13 +1838,13 @@ class GUI ():
 			self.dirty = True
 			self.dirty_areas.append(text_rect)
 
-	def draw_image (self, img=None, o='center', pos=(0.5,0.5), size=(1,1), mask=None, a=1, rs=True, fill=False, sq=False, ci=False):
+	def draw_image (self, img=None, o='center', pos=(0.5,0.5), size=(1,1), mask=None, a=1, rs=True, fill=False, sq=False, ci=False, smooth=True):
 		# decide on place and size
 		img_size = size
 		if (rs):  # size is relative to screen
 			img_size = (size[0] * self.display_size[0], size[1] * self.display_size[1])
 		# get image (returns resized, size_string)
-		img_scaled = img.get(img_size, fill_box=fill, fit_to_square=sq, circular=ci)[0]
+		img_scaled = img.get(img_size, fill_box=fill, fit_to_square=sq, circular=ci, smooth=smooth)[0]
 
 		# determine position
 		xpos = int(pos[0] * self.display_size[0])
@@ -1850,7 +1854,7 @@ class GUI ():
 			ypos = ypos - img_scaled.get_height() / 2
 
 		# set alpha (always set, to avoid remnant settings causing trouble)
-		img_scaled.set_alpha(min(max(a*255,0),255))
+		img_scaled.set_alpha(min(max(a*255,0),255), pygame.RLEACCEL)
 
 		# draw to screen
 		#print('draw_image', xpos, ypos, img_scaled.get_size())
@@ -1887,8 +1891,14 @@ class GUI ():
 		self.dirty = True
 		self.dirty_areas.append(affected_rect)
 
-	def open_simple_image (self, file):
-		return pygame.image.load(file).convert()
+	def open_simple_image (self, file, keep_transparency=False, remove_black=False):
+		img = pygame.image.load(file)
+		if (remove_black):
+			img.set_colorkey([0,0,0], pygame.RLEACCEL)
+		if (keep_transparency):
+			return img.convert_alpha()
+		# return converted to current display layout for improved performance
+		return img.convert()
 
 	def draw_simple_image (self, img=None, o='left', pos=(0.5,0.5), onto=None):
 		size = (img.get_width(), img.get_height())
@@ -1931,7 +1941,7 @@ class GUI ():
 		qr_image = qr.make_image(fill_color="white", back_color="black")
 
 		# convert to pygame Surface and return
-		return pygame.image.fromstring(qr_image.tobytes(), qr_image.size, qr_image.mode)
+		return pygame.image.fromstring(qr_image.tobytes(), qr_image.size, qr_image.mode).convert()
 
 	def save_screen (self):
 		while (os.path.exists(str(self.screenshot_counter) + '.png')):
@@ -1951,7 +1961,7 @@ class ProgramBase ():
 		self.last_update  = 0  # seconds since epoch
 		self.dirty        = True
 		self.first_run    = True
-		self.max_time     = 60   # in seconds
+		self.max_time     = 3600 # in seconds
 		self.shown        = []   # list, each item denotes for how long program has been active
 
 		# status panel variables
@@ -1964,60 +1974,6 @@ class ProgramBase ():
 		self.status_open              = False
 		self.po                       = 0
 		self.por                      = 0
-
-		# init status panel surface (eases its reuse)
-		self.status_panel = pygame.Surface((800, 480))
-		self.status_panel.fill(self.gui.colors['background'])
-		# because panel surface also includes the fullscreen black background, draw the bottom bar on top
-		self.gui.draw_rectangle(o='left', x=0, y=448, w=800, h=32, r=False, onto=self.status_panel)
-		# add identifier and version
-		self.gui.draw_text("status", o='left', x=40, y=6+448, fg='foreground', has_back=False, onto=self.status_panel)
-		self.gui.draw_text("v{0}".format(version), o='left', x=770, y=6+448, fg='support-dark', has_back=False, onto=self.status_panel)
-
-		# draw status panel icons
-		icon_clock       = self.gui.open_simple_image('assets/icon_clock_b.png')
-		icon_crosshair   = self.gui.open_simple_image('assets/icon_crosshair_b.png')
-		icon_dashboard   = self.gui.open_simple_image('assets/icon_dashboard_b.png')
-		icon_diskette    = self.gui.open_simple_image('assets/icon_diskette_b.png')
-		icon_half_moon   = self.gui.open_simple_image('assets/icon_half_moon_b.png')
-		icon_image       = self.gui.open_simple_image('assets/icon_image_b.png')
-		icon_sun         = self.gui.open_simple_image('assets/icon_sun_b.png')
-		icon_thermometer = self.gui.open_simple_image('assets/icon_thermometer_b.png')
-		icon_wifi        = self.gui.open_simple_image('assets/icon_wifi_b.png')
-		icon_restart     = self.gui.open_simple_image('assets/icon_restart_b.png')
-		icon_power       = self.gui.open_simple_image('assets/icon_power_b.png')
-		button_128       = self.gui.open_simple_image('assets/button_128.png')
-		handle           = self.gui.open_simple_image('assets/icon_more_r.png')
-
-		self.gui.draw_simple_image(handle, o='center', pos=(0.5,  0.967), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_image,         pos=(0.05,  0.08), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_diskette,      pos=(0.05,  0.21), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_clock,         pos=(0.05,  0.34), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_crosshair,     pos=(0.295, 0.08), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_dashboard,     pos=(0.295, 0.21), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_thermometer,   pos=(0.295, 0.34), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_sun,           pos=(0.52,  0.08), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_wifi,          pos=(0.52,  0.34), onto=self.status_panel)
-
-		# draw guidance for adding photos text
-		self.gui.draw_text('To add photos, go to the address below', o='left', x=459, y=100, has_back=False, onto=self.status_panel)
-		self.gui.draw_text('or scan the QR code with your phone',    o='left', x=459, y=120, has_back=False, onto=self.status_panel)
-
-		# draw status panel permanent buttons
-		self.gui.draw_simple_image(button_128,       pos=(0.05,  0.6), onto=self.status_panel)
-		self.gui.draw_simple_image(button_128,       pos=(0.235, 0.6), onto=self.status_panel)
-		self.gui.draw_simple_image(button_128,       pos=(0.42,  0.6), onto=self.status_panel)
-		self.gui.draw_simple_image(button_128,       pos=(0.605, 0.6), onto=self.status_panel)
-		self.gui.draw_simple_image(button_128,       pos=(0.79,  0.6), onto=self.status_panel)
-		self.gui.draw_rectangle(x=0.87, y=0.734, w=118, h=2, onto=self.status_panel)
-
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.13,  0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.315, 0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.50,  0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.685, 0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.685, 0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_restart,   o='center', pos=(0.87,  0.669), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_power,     o='center', pos=(0.87,  0.798), onto=self.status_panel)
 
 	def get_name (self):
 		return self.__class__.__name__
@@ -2170,6 +2126,61 @@ class ProgramBase ():
 		self.first_run    = True
 		self.gui.set_dirty_full()
 
+		# --- status panel surface initialisation
+		
+		self.status_panel = pygame.Surface((800, 480))
+		self.status_panel.fill(self.gui.colors['background'])
+		# because panel surface also includes the fullscreen black background, draw the bottom bar on top
+		self.gui.draw_rectangle(o='left', x=0, y=448, w=800, h=32, r=False, onto=self.status_panel)
+		# add identifier and version
+		self.gui.draw_text("status", o='left', x=40, y=6+448, fg='foreground', has_back=False, onto=self.status_panel)
+		self.gui.draw_text("v{0}".format(version), o='left', x=770, y=6+448, fg='support-dark', has_back=False, onto=self.status_panel)
+
+		# draw status panel icons
+		icon_clock       = self.gui.open_simple_image('assets/icon_clock_b.png')
+		icon_crosshair   = self.gui.open_simple_image('assets/icon_crosshair_b.png')
+		icon_dashboard   = self.gui.open_simple_image('assets/icon_dashboard_b.png')
+		icon_diskette    = self.gui.open_simple_image('assets/icon_diskette_b.png')
+		icon_half_moon   = self.gui.open_simple_image('assets/icon_half_moon_b.png')
+		icon_image       = self.gui.open_simple_image('assets/icon_image_b.png')
+		icon_sun         = self.gui.open_simple_image('assets/icon_sun_b.png')
+		icon_thermometer = self.gui.open_simple_image('assets/icon_thermometer_b.png')
+		icon_wifi        = self.gui.open_simple_image('assets/icon_wifi_b.png')
+		icon_restart     = self.gui.open_simple_image('assets/icon_restart_b.png')
+		icon_power       = self.gui.open_simple_image('assets/icon_power_b.png')
+		button_128       = self.gui.open_simple_image('assets/button_128.png')
+		handle           = self.gui.open_simple_image('assets/icon_more_r.png')
+
+		self.gui.draw_simple_image(handle, o='center', pos=(0.5,  0.967), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_image,         pos=(0.05,  0.08), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_diskette,      pos=(0.05,  0.21), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_clock,         pos=(0.05,  0.34), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_crosshair,     pos=(0.295, 0.08), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_dashboard,     pos=(0.295, 0.21), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_thermometer,   pos=(0.295, 0.34), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_sun,           pos=(0.52,  0.08), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_wifi,          pos=(0.52,  0.34), onto=self.status_panel)
+
+		# draw guidance for adding photos text
+		self.gui.draw_text('To add photos, go to the address below', o='left', x=459, y=100, has_back=False, onto=self.status_panel)
+		self.gui.draw_text('or scan the QR code with your phone',    o='left', x=459, y=120, has_back=False, onto=self.status_panel)
+
+		# draw status panel permanent buttons
+		self.gui.draw_simple_image(button_128,       pos=(0.05,  0.6), onto=self.status_panel)
+		self.gui.draw_simple_image(button_128,       pos=(0.235, 0.6), onto=self.status_panel)
+		self.gui.draw_simple_image(button_128,       pos=(0.42,  0.6), onto=self.status_panel)
+		self.gui.draw_simple_image(button_128,       pos=(0.605, 0.6), onto=self.status_panel)
+		self.gui.draw_simple_image(button_128,       pos=(0.79,  0.6), onto=self.status_panel)
+		self.gui.draw_rectangle(x=0.87, y=0.734, w=118, h=2, onto=self.status_panel)
+
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.13,  0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.315, 0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.50,  0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.685, 0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.685, 0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_restart,   o='center', pos=(0.87,  0.669), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_power,     o='center', pos=(0.87,  0.798), onto=self.status_panel)
+
 	""" code to run when this program ceases to be active """
 	def make_inactive (self):
 		self.is_active = False
@@ -2179,7 +2190,9 @@ class ProgramBase ():
 			self.shown.append({'since': int(self.active_since), 'duration': time_active})
 		self.core.data.set_dirty()
 
+		# reset status panel state and clear related surfaces
 		self.set_status_panel_state(False, force=True)
+		self.status_panel = None
 
 		self.dirty     = False
 		self.first_run = True
@@ -2273,6 +2286,8 @@ class DualDisplay (ProgramBase):
 		self.default_time    = 30  # seconds before switching to next photo
 		self.switch_time     = 4   # seconds taken to switch between photos
 		self.max_time        = 3.0 * 3600  # n hours
+		if (self.core.is_debug):
+			self.max_time = 600
 
 		self.im = [
 			{  # one
@@ -2469,10 +2484,10 @@ class DualDisplay (ProgramBase):
 
 	def make_active (self):
 		# draw the picker surfaces in advance for later reference
-		self.picker_plus_surf_n = self.get_picker_surface(False, True)
-		self.picker_plus_surf_a = self.get_picker_surface(True, True)
-		self.picker_min_surf_n  = self.get_picker_surface(False, False)
-		self.picker_min_surf_a  = self.get_picker_surface(True, False)
+		self.picker_plus_surf_n = self.gui.open_simple_image('assets/icon_arrow_up_w.png',   remove_black=True)
+		self.picker_plus_surf_a = self.gui.open_simple_image('assets/icon_arrow_up_r.png',   remove_black=True)
+		self.picker_min_surf_n  = self.gui.open_simple_image('assets/icon_arrow_down_w.png', remove_black=True)
+		self.picker_min_surf_a  = self.gui.open_simple_image('assets/icon_arrow_down_r.png', remove_black=True)
 
 		super().make_active()
 
@@ -2489,39 +2504,6 @@ class DualDisplay (ProgramBase):
 			if (i['image_new'] is not None):
 				i['image_new'].unload()
 		super().make_inactive()
-
-	def get_picker_surface (self, armed=False, positive=False):
-		back_color  = self.gui.colors['foreground']
-		front_color = self.gui.colors['support']
-		if (positive):
-			front_color = self.gui.colors['good']
-		if (armed):
-			back_color = self.gui.colors['support']
-			front_color = self.gui.colors['foreground']
-		
-		surface = pygame.Surface((60, 60))
-		
-		# fill black, then set black color as transparent
-		surface.fill(self.gui.colors['background'])
-		surface.set_colorkey(self.gui.colors['background'], pygame.RLEACCEL)
-
-		# draw circle
-		pygame.draw.circle(surface, back_color, (30,30), 30, 0)
-		# draw a +/- signifier on top
-		pygame.draw.circle(surface, front_color, (30,15), 4, 0)
-		pygame.draw.circle(surface, front_color, (30,25), 4, 0)
-		pygame.draw.circle(surface, front_color, (30,35), 4, 0)
-		pygame.draw.circle(surface, front_color, (30,45), 4, 0)
-		if (positive):
-			# draw a positive signifier
-			pygame.draw.circle(surface, front_color, (21,20), 4, 0)
-			pygame.draw.circle(surface, front_color, (39,20), 4, 0)
-		else:
-			# idem, for negative
-			pygame.draw.circle(surface, front_color, (21,40), 4, 0)
-			pygame.draw.circle(surface, front_color, (39,40), 4, 0)
-		
-		return surface
 
 	def draw (self):
 		# draw two images side-by-side
@@ -2560,7 +2542,7 @@ class DualDisplay (ProgramBase):
 			width = abs(self.picker_plus_pos - self.picker_min_pos) * self.gui.display_size[0]
 			# only draw when it's necessary (line would be visible at all)
 			if (width > self.line_width + 60):
-				self.gui.draw_rectangle(x=self.line_pos, y=-1, w=width, h=2, c='foreground',
+				self.gui.draw_rectangle(x=self.line_pos, y=-1, w=width, h=3, c='foreground',
 					a=self.picker_alpha)
 
 			# draw pickers on top
@@ -2582,18 +2564,24 @@ class PhotoSoup (ProgramBase):
 		super().__init__(core)
 
 		self.max_time             = 3.0 * 3600  # n hours
+		if (self.core.is_debug):
+			self.max_time = 600
 
 		self.base_constant        = 1
 		self.base_size            = 1
 		self.goal_num_images      = 3    # starting number of images shown on-screen
-		self.max_num_images       = 7    # max number of images shown on-screen
+		self.max_num_images       = 6    # max number of images shown on-screen
 		self.min_num_images       = 2    # minimum number of images shown on-screen
 		self.last_image_addition  = 0    # timestamp
 		self.time_to_pass_sans_ix = 900  # test 20, ideal 900
-		self.time_before_addition = 1800 # test 30, ideal 1800
+		self.time_before_addition = 2700 # test 30, was 1800
+		if (self.core.is_debug):
+			self.time_to_pass_sans_ix = 20
+			self.time_before_addition = 45
 		self.images               = []
 		self.active_image         = None
 		self.center               = Vector4(0.5*self.dsize[0], 0.5*self.dsize[1], 0, 0)
+		self.button_add_photo     = self.gui.open_simple_image('assets/icon_plus.png', keep_transparency=True)
 
 	def can_run (self):
 		if (not self.core.get_images_count() > 20):
@@ -2622,11 +2610,11 @@ class PhotoSoup (ProgramBase):
 			# time factor --- base factor gets smaller as the time since the last interaction gets longer
 			# uses the formula 60/x - 1, with outcome limited to [-1,0.5]
 			# (although lower limit of formula only approaches -1)
-			self.base_constant += 0.15 * min(max(60.0 / (now - self.core.get_last_ix()) - 1, -0.7), 0.5)
+			#self.base_constant += 0.15 * min(max(60.0 / (now - self.core.get_last_ix()) - 1, -0.7), 0.5)
 
 			# distance factor --- base factor gets increased with low distance
 			# uses the formula -.8*x + 1.2, with limits [0, 0.5]
-			self.base_constant += 0.3 * min(max(-0.8 * self.core.get_distance() + 1.2, 0), 0.5)
+			#self.base_constant += 0.3 * min(max(-0.8 * self.core.get_distance() + 1.2, 0), 0.5)
 
 			# adjust base size (rescale from base factor, with limits to avoid sizing errors)
 			new_size = min(max(0.8 * self.base_constant, 0.1), 2)
@@ -2640,7 +2628,15 @@ class PhotoSoup (ProgramBase):
 				self.goal_num_images = min(self.goal_num_images + 1, self.max_num_images)
 
 			# handle user interactivity - - - - - - - - - - - - - - - - -
+
+			# handle add photo button tap
+			if (self.core.input.state == self.core.input.RELEASED_TAP
+				and self.core.input.pos.x < 90 and self.core.input.pos.y > 400):
+				# ensure there is a little timeout before adding another photo
+				if (self.last_image_addition < now - 1):
+					self.goal_num_images = min(self.goal_num_images + 1, self.max_num_images)
 			
+			# image interactions
 			if (self.core.input.DRAGGING <= self.core.input.state < self.core.input.RELEASED):
 				if (self.active_image is None):
 					# 1. check if dragging started over image
@@ -2744,7 +2740,7 @@ class PhotoSoup (ProgramBase):
 				# else, update the current image's position, size, etc.
 				else:
 					# adjust the size
-					i['size'] = 1 + (i['image'].rate / 4.0)  # potential range is thus [0.75, 1.25]
+					i['size'] = 1 + (i['image'].rate / 3.0)  # potential range is thus [0.66, 1.33]
 
 					# non-user-controlled images update based on relative position to other images
 					if (not i['user_control']):
@@ -2843,7 +2839,11 @@ class PhotoSoup (ProgramBase):
 			xpos = i['v'].x / self.dsize[0]
 			ypos = i['v'].y / self.dsize[1]
 			size = self.get_diameter(i)
-			self.gui.draw_image(i['image'], pos=(xpos, ypos), size=(size, size), rs=False, ci=True)
+			self.gui.draw_image(i['image'], pos=(xpos, ypos), size=(size, size), rs=False, ci=True, smooth=True)
+
+		# draw button on top
+		if (self.goal_num_images < self.max_num_images):
+			self.gui.draw_simple_image(self.button_add_photo, pos=(0.01, 0.855))
 
 		# call draw function to allow drawing default elements if any
 		super().draw()

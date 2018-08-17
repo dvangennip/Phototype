@@ -74,6 +74,10 @@ The schematic below corresponds to the versions of the circuit boards that were 
 Navigate to the photocore directory and run
 `sudo python3 photocore.py`
 
+There are some command line options that can be set:
+* `-debug` tunes various timings to be faster and easier to observe while developing and/o enables certain logging output.
+* `-nonet` disables the background threads that check for or rely on network access. This disables the ability to upload new photos but makes starting and stopping the program much faster.
+
 ### Display backlight adjustments
 Adjust the backlight with the following command:
 `echo n > /sys/class/backlight/rpi_backlight/brightness`
@@ -143,17 +147,24 @@ Code has to be run on the RPi itself as the screen is available there, unless th
 If all else fails, this will do:
 `sudo killall -vs SIGKILL python3`
 
-## Visualising data
-Phototype keeps track of user interactions with the device. This data is saved in `data.bin` and human-readable `data.log` files in the `phototype` folder (available when the script has run at least once). These files are not directly suitable for visual analysis. To help with this, a `visualiser.py` script prepares the data to be importing and visualised by a [Processing.py][13] script. Two scripts are included in the `S4DataVisualiser` folders.
+#### Profiling the code
+Use the following command to generate a profile while running the software:
+	sudo python3 -m cProfile -o profile.pstats photocore.py -debug -nonet
+
+The generated file should then be converted to a dot file, which can be used to generate a call graph. Install [gprof2dot][13] via `pip3 install gprof2dot` to use it. The graph visualisation is handled by [GraphViz][14], on macOS installed via [homebrew][15]. A one-line command as shown below does the conversion and visualisation in one go:
+	gprof2dot -f pstats  -n 0.2 -e 0.05 profile.pstats | dot -Tpng -o profile.png
+
+## Visualising user data
+Phototype keeps track of user interactions with the device. This data is saved in `data.bin` and human-readable `data.log` files in the `phototype` folder (available when the script has run at least once). These files are not directly suitable for visual analysis. To help with this, a `visualiser.py` script prepares the data to be importing and visualised by a [Processing.py][16] script. Two scripts are included in the `S4DataVisualiser` folders.
 
 The visualiser scripts expect that user data is provided in unique files, each named `pN_data.bin` (where N denotes a participant number, e.g., p1 or p2).
 
 ## License
-The source code and models are available under a [CC-BY-NC 3.0 license][14]. You are free to share, copy and redistribute the material in any medium or format, and to adapt it for other uses. However, you must give credit and cannot use the code and materials for commercial purposes.
+The source code and models are available under a [CC-BY-NC 3.0 license][17]. You are free to share, copy and redistribute the material in any medium or format, and to adapt it for other uses. However, you must give credit and cannot use the code and materials for commercial purposes.
 
-Note that [DropzoneJS][15] files are included in this repository for convenience but remain under the original MIT license.
+Note that [DropzoneJS][18] files are included in this repository for convenience but remain under the original MIT license.
 
-Icons on the status pane by [hirschwolf][16] and [Freepik][17] from Flaticon are included in this repository for convenience but remain under the original Flaticon Basic license.
+Icons on the status pane by [hirschwolf][19] and [Freepik][20] from Flaticon are included in this repository for convenience but remain under the original Flaticon Basic license.
 
 ## Known issues and possible improvements for future revisions
 - Uploading photos:
@@ -176,11 +187,14 @@ Icons on the status pane by [hirschwolf][16] and [Freepik][17] from Flaticon are
 [10]:	https://wifi.readthedocs.io/en/latest/wifi_command.html#tutorial
 [11]:	http://elinux.org/RPi_Serial_Connection
 [12]:	http://pinout.xyz/pinout/ground#
-[13]:	http://py.processing.org/
-[14]:	https://creativecommons.org/licenses/by-nc/3.0/au/
-[15]:	http://www.dropzonejs.com/
-[16]:	https://www.flaticon.com/authors/hirschwolf
-[17]:	https://www.flaticon.com/authors/freepik
+[13]:	https://github.com/jrfonseca/gprof2dot
+[14]:	http://www.graphviz.org/
+[15]:	https://brew.sh/
+[16]:	http://py.processing.org/
+[17]:	https://creativecommons.org/licenses/by-nc/3.0/au/
+[18]:	http://www.dropzonejs.com/
+[19]:	https://www.flaticon.com/authors/hirschwolf
+[20]:	https://www.flaticon.com/authors/freepik
 
 [image-1]:	info/phototype-overview.png
 [image-2]:	info/wiring-schematic.png
