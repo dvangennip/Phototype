@@ -313,7 +313,6 @@ class Photocore ():
 		#self.set_active(self.program_preferred_index)
 
 	def request_switch (self):
-		print('request_switch()')
 		self.switch_requested = True
 
 	def toggle_status_panel (self):
@@ -1073,7 +1072,9 @@ class ImageManager ():
 		# keep track of which image gets returned
 		self.recent.append(img.file)
 		# make sure the tracking list is limited to avoid images not returning any time soon
-		if (len(self.recent) > 10):
+		# note: number ought to be sufficiently high such that no program would show a similar
+		#       number of images on-screen at any time
+		if (len(self.recent) > 15):
 			self.recent.pop(0)  # remove first (oldest) element in list
 
 		return img
@@ -2375,7 +2376,7 @@ class DualDisplay (ProgramBase):
 				# set up for that
 				self.preferred_image = int(self.line_pos < self.neutral_pos)  # 1 or 0, if line > 0.5
 
-				# do actual rating and swap
+				# do actual rating and swap (if at least some time has past to avoid glitches because of hanging input)
 				if (check_for_swap_over and self.last_swap < now - 0.5):
 					print('swap')
 					# rate both images
@@ -2572,6 +2573,8 @@ class PhotoSoup (ProgramBase):
 		self.base_size            = 1
 		self.goal_num_images      = 3    # starting number of images shown on-screen
 		self.max_num_images       = 6    # max number of images shown on-screen
+		if (self.core.is_debug):
+			self.max_num_images = 11
 		self.min_num_images       = 2    # minimum number of images shown on-screen
 		self.last_image_addition  = 0    # timestamp
 		self.time_to_pass_sans_ix = 900  # test 20, ideal 900
@@ -2820,7 +2823,10 @@ class PhotoSoup (ProgramBase):
 	def get_diameter (self, a):
 		return a['size'] * self.base_size * self.dsize[1]
 
+	""" attractive force scales linearly with the distance between a and b """
 	def get_force_attraction (self, a, b):
+		if (a['user_control'] or b['user_control']):
+			return -0.0002 * self.get_distance(a['v'], b['v'])
 		return 0.0001 * self.get_distance(a['v'], b['v'])
 
 	def get_force_repulsion (self, a, b):
@@ -2841,7 +2847,7 @@ class PhotoSoup (ProgramBase):
 			ypos = i['v'].y / self.dsize[1]
 			size = self.get_diameter(i)
 			self.gui.draw_image(i['image'], pos=(xpos, ypos), size=(size, size), rs=False, ci=True, smooth=True)
-
+		
 		# draw button on top
 		if (self.goal_num_images < self.max_num_images):
 			self.gui.draw_simple_image(self.button_add_photo, pos=(0.01, 0.855))
