@@ -2376,7 +2376,8 @@ class DualDisplay (ProgramBase):
 				self.preferred_image = int(self.line_pos < self.neutral_pos)  # 1 or 0, if line > 0.5
 
 				# do actual rating and swap
-				if (check_for_swap_over):
+				if (check_for_swap_over and self.last_swap < now - 0.5):
+					print('swap')
 					# rate both images
 					self.im[0]['image'].do_rate(self.preferred_image == 0)  # True if line is far right, False otherwise
 					self.im[1]['image'].do_rate(self.preferred_image == 1)  # vice versa, True if far left
