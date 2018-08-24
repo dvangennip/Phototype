@@ -143,6 +143,7 @@ class Photocore ():
 		self.add_program('BlankScreen')
 		self.add_program('DualDisplay')
 		self.add_program('PhotoSoup')
+		self.add_program('PhotoPatterns')
 
 		self.data.log('Photocore started.')
 
@@ -2859,6 +2860,107 @@ class PhotoSoup (ProgramBase):
 		# draw button on top
 		if (self.goal_num_images < self.max_num_images):
 			self.gui.draw_simple_image(self.button_add_photo, pos=(0.01, 0.855))
+
+		# call draw function to allow drawing default elements if any
+		super().draw()
+
+
+class PhotoPatterns (ProgramBase):
+	def __init__ (self, core=None):
+		super().__init__(core)
+
+		self.max_time             = 3.0 * 3600  # n hours
+		if (self.core.is_debug):
+			self.max_time = 600
+
+		self.default_time    = 30  # seconds before switching to next photo
+		self.switch_time     = 4   # seconds taken to switch between photos
+		self.im = [
+			{
+				'image'    : None,
+				'image_new': None,
+				'alpha'    : 0,
+				'since'    : 0,
+				'max_time' : self.default_time,
+				'swap'     : False
+			}
+		]
+		# add sufficient copies for all images
+		for x in range(0,4):
+			self.im.append( dict(self.im[0]) )
+
+		self.last_swap = 0
+
+	def can_run (self):
+		if (not self.core.get_images_count() > 20):
+			return False
+		return True
+
+	def update (self):
+		if (self.first_run or self.status_open is False):
+			interactive = False
+			now         = time.time()
+
+			# is state interactive?
+			if (self.core.input.state > self.core.input.REST):
+				self.dirty  = True
+				interactive = True
+
+			# --- default code above ----------
+
+			swapped = False
+			for i in self.im:
+				if (i['image'] is None or self.first_run or (interactive and self.last_swap < now - 0.5)):
+					i['image'] = self.core.images.get_next()
+					i['since'] = now
+					self.dirty = True
+					swapped = True
+			if (swapped):
+				self.last_swap = now
+
+				# log this action
+				#self.core.data.log_action('pp.pick', '{0}, of {1} pattern'.format(i['image'].file, len(self.images)))
+
+		# --- default code below ----------
+
+		# indicate update is necessary, if so, always do full to avoid glitches
+		if (self.dirty):
+			super().update(full=True)
+		else:
+			super().update(ignore=True)
+
+	def make_inactive (self):
+		# reset variables to None to free memory
+		for i in self.im:
+			if (i['image'] is not None):
+				i['image'].unload( i['since'] )
+			if (i['image_new'] is not None):
+				i['image_new'].unload()
+			i['alpha']    = 0
+			i['since']    = 0
+			i['max_time'] = self.default_time
+			i['swap']     = False
+		super().make_inactive()
+
+	def draw (self):
+		# draw main image
+		self.gui.draw_image(
+			self.im[0]['image'],         pos=(0.4, 0.5),   size=(0.8, 1), mask=(0, 0.8125, 0,1), a=1-self.im[0]['alpha'])
+		# draw new main image if available
+		if (self.im[0]['alpha'] > 0):
+			self.gui.draw_image(
+				self.im[0]['image_new'], pos=(0.406, 0.5), size=(1,1),    mask=(0, 0.8125, 0,1), a=self.im[0]['alpha'])
+
+		# draw side images
+		for index, i in enumerate(self.im):
+			if (index == 0):
+				continue  # skip the main image
+			# draw each image
+			self.gui.draw_image(i['image'],         pos=(0.90625, 0.117 + (index-1) * 0.256), size=(0.1875, 0.234),	a=1-i['alpha'])
+			if (i['alpha'] > 0):
+				self.gui.draw_image(i['image_new'], pos=(0.90625, 0.117 + (index-1) * 0.256), size=(0.1875, 0.234), a=i['alpha'])
+
+		# draw UI overlays if necessary
 
 		# call draw function to allow drawing default elements if any
 		super().draw()
