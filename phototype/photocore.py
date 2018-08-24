@@ -586,9 +586,7 @@ class DataManager ():
 	def save (self, export=False):
 		# regular save
 		with open('data.bin', 'wb') as f:
-			# TODO fix macOS issue
-			if (sys.platform != 'darwin'):
-				pickle.dump(self.data, f)
+			pickle.dump(self.data, f)
 			self.last_save = time.time()
 
 		# export to human-readable file
@@ -1055,12 +1053,12 @@ class ImageManager ():
 		return self.images[ random.randint(0, len(self.images)-1) ]
 
 	""" Returns an image and checks if it's not similar to recent images returned """
-	def get_next (self, rated=False):
+	def get_next (self, rated=True):
 		# get an image to return, and make sure it wasn't returned recently
 		acceptable = False
 		while not acceptable:
 			img = self.get_random()
-			if (img.file not in self.recent):
+			if (img.hidden is False and img.file not in self.recent):
 				acceptable = True
 
 				# also consider the image rating to determine whether to accept it
@@ -1409,6 +1407,14 @@ class Image ():
 	""" Gives a default str(this instance) output """
 	def __str__ (self):
 		return '{0}; rate: {1:.2f}; hidden: {2}; shown: {3}'.format(self.file, self.rate, self.hidden, self.shown)
+
+	""" when pickling, this method provides an alternative to the regular __dict__ function """
+	def __getstate__ (self):
+		state = self.__dict__.copy()
+		# get rid of any unpicklable elements (e.g., image objects, pygame surfaces, file handlers)
+		state['image']     = {'full': None}
+		state['is_loaded'] = False  # triggers a reload after unpickling
+		return state
 
 
 class Vector4 ():
@@ -2384,7 +2390,6 @@ class DualDisplay (ProgramBase):
 
 				# do actual rating and swap (if at least some time has past to avoid glitches because of hanging input)
 				if (check_for_swap_over and self.last_swap < now - 0.5):
-					print('swap')
 					# rate both images
 					self.im[0]['image'].do_rate(self.preferred_image == 0)  # True if line is far right, False otherwise
 					self.im[1]['image'].do_rate(self.preferred_image == 1)  # vice versa, True if far left
@@ -2440,8 +2445,8 @@ class DualDisplay (ProgramBase):
 			for index, i in enumerate(self.im):
 				if (self.first_run):
 					# make sure there is an image
-					i['image']     = self.core.images.get_next(rated=True)
-					i['image_new'] = self.core.images.get_next(rated=True)
+					i['image']     = self.core.images.get_next()
+					i['image_new'] = self.core.images.get_next()
 					i['since']     = now
 					if (index == 1):
 						i['max_time'] *= 1.5
@@ -2469,7 +2474,7 @@ class DualDisplay (ProgramBase):
 						# reassign and reset timers, etc.
 						i['swap']      = False
 						i['image']     = i['image_new']
-						i['image_new'] = self.core.images.get_next(rated=True)  # decide on new image early
+						i['image_new'] = self.core.images.get_next()  # decide on new image early
 						i['alpha']     = 0
 						i['since']     = now
 						i['max_time']  = self.default_time
@@ -2577,11 +2582,12 @@ class PhotoSoup (ProgramBase):
 
 		self.base_constant        = 1
 		self.base_size            = 1
+		self.default_num_images   = 3
 		self.goal_num_images      = 3    # starting number of images shown on-screen
+		self.min_num_images       = 2    # minimum number of images shown on-screen
 		self.max_num_images       = 6    # max number of images shown on-screen
 		if (self.core.is_debug):
 			self.max_num_images = 11
-		self.min_num_images       = 2    # minimum number of images shown on-screen
 		self.last_image_addition  = 0    # timestamp
 		self.time_to_pass_sans_ix = 900  # test 20, ideal 900
 		self.time_before_addition = 2700 # test 30, was 1800
@@ -2647,7 +2653,7 @@ class PhotoSoup (ProgramBase):
 					self.goal_num_images = min(self.goal_num_images + 1, self.max_num_images)
 
 					# log this action
-					self.core.data.log_action('ps.add', '{0}, to have {1} images'.format(i['image'].file, len(self.images)))
+					self.core.data.log_action('ps.add', 'new total of {0} images'.format(len(self.images)))
 			
 			# image interactions
 			if (self.core.input.DRAGGING <= self.core.input.state < self.core.input.RELEASED):
@@ -2813,6 +2819,7 @@ class PhotoSoup (ProgramBase):
 			if (i['image'] is not None):
 				i['image'].unload( i['since'] )
 		self.images = []
+		self.goal_num_images = self.default_num_images
 		super().make_inactive()
 
 	def is_on_sceen (self, a):
