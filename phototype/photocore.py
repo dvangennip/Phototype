@@ -329,7 +329,7 @@ class Photocore ():
 	def get_memory_usage (self):
 		return self.memory_usage
 
-	def get_distance (self):
+	def get_sensor_distance (self):
 		return self.distance.get()
 
 	def get_display_brightness (self):
@@ -1055,10 +1055,12 @@ class ImageManager ():
 	""" Returns an image and checks if it's not similar to recent images returned """
 	def get_next (self, rated=True):
 		# get an image to return, and make sure it wasn't returned recently
+		now = time.time()
 		acceptable = False
+
 		while not acceptable:
 			img = self.get_random()
-			if (img.hidden is False and img.file not in self.recent):
+			if (img.hidden < now and img.file not in self.recent):
 				acceptable = True
 
 				# also consider the image rating to determine whether to accept it
@@ -1161,7 +1163,7 @@ class Image ():
 		self.is_loaded = False
 		self.last_use  = 0
 
-		self.hidden    = False
+		self.hidden    = 0      # timestamp until when image is hidden
 		self.rate      = rate   # default is 0, range is [-1, 1]
 		self.shown     = list(shown)  # list, each item denotes for how long image has been shown
 
@@ -1385,7 +1387,7 @@ class Image ():
 			self.rate += delta
 		else:
 			self.rate -= delta
-		# limit to [0,1] range
+		# limit to [-1,1] range
 		self.rate = max(min(self.rate, 1), -1)
 
 		return self.rate
@@ -1393,8 +1395,12 @@ class Image ():
 	def set_rate (self, rate=0):
 		self.rate = rate
 
-	def hide (self, hide_state=True):
-		self.hidden = hide_state
+	""" sets image to be hidden until indicated timestamp (default is very far into future) """
+	def hide (self, until=9999999999):
+		self.hidden = int(until)  # ensure this is just an integer, not a float, for simplicity
+		# if permanently hiding this image, also set its rating to the lowest possible
+		if (until = 9999999999):
+			self.do_rate(False, 2)
 
 	""" Adds viewings of this image to a list """
 	def was_shown (self, time=0):
@@ -1426,6 +1432,18 @@ class Vector4 ():
 		self.y = y
 		self.z = z
 		self.w = w
+
+	""" Ignore z and w axes """
+	def get_distance_2D (self, b):
+		return sqrt(pow(b.x - self.x,2) + pow(b.y - self.y ,2))
+
+	def get_distance (self, b):
+		return sqrt(pow(b.x - self.x,2) + pow(b.y - self.y ,2) + pow(b.z - self.z ,2) + pow(b.w - self.w ,2))
+
+	def get_angle_2D (self, b):
+		dx = b.x - self.x
+		dy = self.y - b.y
+		return atan2(dy, dx)
 
 	def copy (self):
 		return Vector4(self.x, self.y, self.z, self.w)
@@ -1696,7 +1714,7 @@ class GUI ():
 		# for testing only
 		if (self.dirty and self.core.is_debug):
 			# draw distance slider
-			self.draw_slider(o='left', x=0, y=0, w=800, h=3, r=(self.core.get_distance() / 6.5))
+			self.draw_slider(o='left', x=0, y=0, w=800, h=3, r=(self.core.get_sensor_distance() / 6.5))
 			# draw touch position
 			if (self.core.input.state > self.core.input.REST):
 				self.draw_circle(x=self.core.input.pos.x, y=self.core.input.pos.y, r=False)
@@ -1974,7 +1992,8 @@ class ProgramBase ():
 		self.last_update  = 0  # seconds since epoch
 		self.dirty        = True
 		self.first_run    = True
-		self.max_time     = 3600 # in seconds
+		self.max_time     = 3600   # in seconds,  1h
+		self.snooze_time  = 86400  # in seconds, 24h
 		self.shown        = []   # list, each item denotes for how long program has been active
 
 		# status panel variables
@@ -2233,8 +2252,8 @@ class ProgramBase ():
 			self.gui.draw_text(str(self.core.get_time()),               o='left', x=86, y=169 + self.po)
 
 			# distance (+plus sensor state)
-			self.gui.draw_slider(o='left', x=283, y=66 + self.po, w=110, h=5, r=(self.core.get_distance() / 6.5), bg='subtle')
-			self.gui.draw_text("{0:.2f} m".format(self.core.get_distance()), o='left', x=283, y=44 + self.po)
+			self.gui.draw_slider(o='left', x=283, y=66 + self.po, w=110, h=5, r=(self.core.get_sensor_distance() / 6.5), bg='subtle')
+			self.gui.draw_text("{0:.2f} m".format(self.core.get_sensor_distance()), o='left', x=283, y=44 + self.po)
 
 			# memory usage
 			self.gui.draw_slider(o='left', x=283, y=128 + self.po, w=110, h=5, r=(self.core.get_memory_usage() / 100.0), bg='subtle')
@@ -2416,7 +2435,7 @@ class DualDisplay (ProgramBase):
 				self.dirty = True
 
 			# decide if line should be shown
-			new_line_width = max(min(20 / pow(self.core.get_distance() + 0.5, 3), 6), 0)
+			new_line_width = max(min(20 / pow(self.core.get_sensor_distance() + 0.5, 3), 6), 0)
 			if (interactive):
 				# make it fade in
 				new_line_width = min(self.line_width + 1, 6)
@@ -2429,7 +2448,7 @@ class DualDisplay (ProgramBase):
 				self.dirty = True
 			
 			# decide if picker should be shown
-			new_picker_alpha = max(min(-10/3 * self.core.get_distance() + 8/3, 1), 0)
+			new_picker_alpha = max(min(-10/3 * self.core.get_sensor_distance() + 8/3, 1), 0)
 			if (interactive):
 				# make it fade in
 				new_picker_alpha = min(self.picker_alpha + 0.1, 1)
@@ -2596,8 +2615,10 @@ class PhotoSoup (ProgramBase):
 			self.time_before_addition = 45
 		self.images               = []
 		self.active_image         = None
-		self.center               = Vector4(0.5*self.dsize[0], 0.5*self.dsize[1], 0, 0)
+		self.center               = Vector4(0.5*self.dsize[0], 0.5*self.dsize[1])
+		self.corner_bottom_right  = Vector4(800, 480)
 		self.button_add_photo     = self.gui.open_simple_image('assets/icon_plus.png', keep_transparency=True)
+		self.button_trash         = self.gui.open_simple_image('assets/icon_trash.png', keep_transparency=True)
 
 	def can_run (self):
 		if (not self.core.get_images_count() > 20):
@@ -2606,7 +2627,7 @@ class PhotoSoup (ProgramBase):
 
 	def update (self):
 		if (self.first_run or self.status_open is False):
-			now = time.time()
+			now     = time.time()
 
 			# determine base factor - - - - - - - - - - - - - - - - - - -
 
@@ -2630,7 +2651,7 @@ class PhotoSoup (ProgramBase):
 
 			# distance factor --- base factor gets increased with low distance
 			# uses the formula -.8*x + 1.2, with limits [0, 0.5]
-			#self.base_constant += 0.3 * min(max(-0.8 * self.core.get_distance() + 1.2, 0), 0.5)
+			#self.base_constant += 0.3 * min(max(-0.8 * self.core.get_sensor_distance() + 1.2, 0), 0.5)
 
 			# adjust base size (rescale from base factor, with limits to avoid sizing errors)
 			new_size = min(max(0.8 * self.base_constant, 0.1), 2)
@@ -2663,7 +2684,7 @@ class PhotoSoup (ProgramBase):
 					closest_distance = 9999  # very high number that's sure to be met
 					closest_image    = None
 					for i in self.images:
-						distance = self.get_distance(self.core.input.pos, i['v'])
+						distance = i['v'].get_distance_2D(self.core.input.pos)
 						# if closest so far and distance < image radius, we have a match
 						if (distance < closest_distance and distance < self.get_diameter(i)/2.0):
 							closest_distance = distance
@@ -2683,13 +2704,19 @@ class PhotoSoup (ProgramBase):
 
 					# 2. pull the center of that image towards user position (image follows touch)
 					# set angle towards touch position
-					self.active_image['v'].z = self.get_angle(self.active_image['v'], self.core.input.pos)
+					self.active_image['v'].z = self.active_image['v'].get_angle_2D(self.core.input.pos)
 					# set speed to recent touch movement magnitude
 					self.active_image['v'].w = self.core.input.pos.w
 				
 			elif (self.core.input.state >= self.core.input.RELEASED):
 				if (self.active_image is not None):
-					# 3. once drag is released, let angle and trajectory be the same as recent trajectory
+					# check if the image was let go over the bottom-right corner to hide
+					distance_from_corner = self.corner_bottom_right.get_distance_2D(self.core.input.pos)
+					if (distance_from_corner < 64):
+						self.active_image['do_hide'] = 2  # mark to hide
+					elif (distance_from_corner < 128):
+						self.active_image['do_hide'] = 1  # mark to snooze
+					# once drag is released, let angle and trajectory be the same as recent trajectory
 					# ^ so don't update here
 					self.active_image['user_control'] = False
 					self.active_image = None
@@ -2704,7 +2731,8 @@ class PhotoSoup (ProgramBase):
 					'v'           : Vector4(0, 0, 0, 0),
 					'size'        : 1,
 					'user_control': False,  # False
-					'user_last_ix': 0       # timestamp of last interaction
+					'user_last_ix': 0,      # timestamp of last interaction
+					'do_hide'     : 0       # 0: nope, 1: snooze, 2: hide forever
 				})
 				# keep track of time
 				self.last_image_addition = now
@@ -2712,7 +2740,7 @@ class PhotoSoup (ProgramBase):
 			# do per image updating
 			for i in self.images:
 				# if new or moved out of screen range, renew
-				if (i['image'] is None or not self.is_on_sceen(i)):
+				if (i['image'] is None or not self.is_on_sceen(i) or i['do_hide'] != 0):
 					if (self.goal_num_images >= len(self.images)):
 						# cleanup if possible
 						if (i['image'] is not None):
@@ -2733,8 +2761,16 @@ class PhotoSoup (ProgramBase):
 								if (other_img is not i):
 									other_img['image'].do_rate(True, uprating)
 
-							# log this action
-							self.core.data.log_action('ps.flung', '{0}, amid {1} images'.format(i['image'].file, len(self.images)))
+							# set hide time
+							if (i['do_hide'] == 1):
+								i['image'].hide( until=(now + self.snooze_time) )
+								self.core.data.log_action('ps.snooze', '{0}'.format(i['image'].file))
+							elif (i['do_hide'] == 2):
+								i['image'].hide()
+								self.core.data.log_action('ps.hide', '{0}'.format(i['image'].file))
+							else:
+								# log this action
+								self.core.data.log_action('ps.flung', '{0}, amid {1} images'.format(i['image'].file, len(self.images)))
 
 							# remove this image slot (mimics code below)
 							i['image'].unload( i['since'] )  # report time since it appeared
@@ -2767,9 +2803,9 @@ class PhotoSoup (ProgramBase):
 						# this is primarily a problem with large images ~ a small number
 						if (len(self.images) <= 4):
 							# get angle towards the center of screen
-							center_angle    = self.get_angle(i['v'], self.center)
+							center_angle    = i['v'].get_angle_2D(self.center)
 							# distance from center -> factor of the current angle's adjustment to the center angle
-							center_distance = self.get_distance(i['v'], self.center)
+							center_distance = i['v'].get_distance_2D(self.center)
 							# only continue to adjust if distance is close to edge
 							if (center_distance > 0.9 * self.dsize[1]):
 								# factor is limited to .01 to avoid abrupt changes
@@ -2792,7 +2828,7 @@ class PhotoSoup (ProgramBase):
 							if (img is not i):
 								# calculate influence
 								f = self.get_force_attraction(i, img) - self.get_force_repulsion(i, img)
-								a = self.get_angle(i['v'], img['v'])
+								a = i['v'].get_angle_2D(img['v'])
 
 								# add this vector to the base
 								vi_x += f * cos(a)
@@ -2828,25 +2864,17 @@ class PhotoSoup (ProgramBase):
 			return False
 		return True
 
-	def get_angle (self, a, b):
-		dx = b.x - a.x
-		dy = a.y - b.y
-		return atan2(dy, dx)
-
-	def get_distance (self, a, b):
-		return sqrt(pow(b.x - a.x,2) + pow(a.y - b.y ,2))
-
 	def get_diameter (self, a):
 		return a['size'] * self.base_size * self.dsize[1]
 
 	""" attractive force scales linearly with the distance between a and b """
 	def get_force_attraction (self, a, b):
 		if (a['user_control'] or b['user_control']):
-			return -0.0002 * self.get_distance(a['v'], b['v'])
-		return 0.0001 * self.get_distance(a['v'], b['v'])
+			return -0.0002 * a['v'].get_distance_2D(b['v'])
+		return 0.0001 * a['v'].get_distance_2D(b['v'])
 
 	def get_force_repulsion (self, a, b):
-		distance = self.get_distance(a['v'], b['v'])
+		distance = a['v'].get_distance_2D(b['v'])
 		# substract sum of radii in pixels, so distance is calculated for closest edges
 		distance -= (self.get_diameter(a) + self.get_diameter(b)) / 2.0
 		
@@ -2867,6 +2895,9 @@ class PhotoSoup (ProgramBase):
 		# draw button on top
 		if (self.goal_num_images < self.max_num_images):
 			self.gui.draw_simple_image(self.button_add_photo, pos=(0.01, 0.855))
+
+		if (self.active_image is not None):
+			self.gui.draw_simple_image(self.button_trash, pos=(0.84, 0.7333))
 
 		# call draw function to allow drawing default elements if any
 		super().draw()
