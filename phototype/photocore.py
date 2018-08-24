@@ -837,12 +837,12 @@ class DistanceSensor ():
 		else:
 			# without sensor, fake the distance going up and down over time
 			if (self.distance_direction is True):
-				self.distance = self.distance + 0.02
+				self.distance = self.distance + 0.01
 				if (self.distance > 6.5):
 					self.distance = 6.5
 					self.distance_direction = False
 			elif (self.distance_direction is False):
-				self.distance = self.distance - 0.02
+				self.distance = self.distance - 0.01
 				if (self.distance < 0.2):
 					self.distance = 0.2
 					self.distance_direction = True
@@ -2642,8 +2642,11 @@ class PhotoSoup (ProgramBase):
 			if (self.core.input.state == self.core.input.RELEASED_TAP
 				and self.core.input.pos.x < 90 and self.core.input.pos.y > 400):
 				# ensure there is a little timeout before adding another photo
-				if (self.last_image_addition < now - 1):
+				if (self.last_image_addition < now - 0.5):
 					self.goal_num_images = min(self.goal_num_images + 1, self.max_num_images)
+
+					# log this action
+					self.core.data.log_action('ps.add', '{0}, to have {1} images'.format(i['image'].file, len(self.images)))
 			
 			# image interactions
 			if (self.core.input.DRAGGING <= self.core.input.state < self.core.input.RELEASED):
