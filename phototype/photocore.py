@@ -1043,6 +1043,7 @@ class ImageManager ():
 			if (file_match is not None):
 				p.set_shown(file_match.shown)
 				p.set_rate(file_match.rate)
+				p.hide(file_match.hidden)
 			# add to list
 			self.images.append(p)
 
@@ -1161,6 +1162,7 @@ class Image ():
 		self.is_loaded = False
 		self.last_use  = 0
 
+		self.hidden    = False
 		self.rate      = rate   # default is 0, range is [-1, 1]
 		self.shown     = list(shown)  # list, each item denotes for how long image has been shown
 
@@ -1392,6 +1394,9 @@ class Image ():
 	def set_rate (self, rate=0):
 		self.rate = rate
 
+	def hide (self, hide_state=True):
+		self.hidden = hide_state
+
 	""" Adds viewings of this image to a list """
 	def was_shown (self, time=0):
 		if (time > 0):
@@ -1402,7 +1407,7 @@ class Image ():
 
 	""" Gives a default str(this instance) output """
 	def __str__ (self):
-		return '{0}; rate: {1:.2f}; shown: {2}'.format(self.file, self.rate, self.shown)
+		return '{0}; rate: {1:.2f}; hidden: {2}; shown: {3}'.format(self.file, self.rate, self.hidden, self.shown)
 
 
 class Vector4 ():
