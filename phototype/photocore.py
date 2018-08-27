@@ -157,14 +157,14 @@ class Photocore ():
 	def update (self):
 		now = time.time()
 
-		# update self
-		if (self.last_update < now - 1):
+		# update self (not every frame)
+		if (self.last_update < now - 10):
 			# track memory usage
 			mem_available = round(psutil.virtual_memory().available / (1024*1024))
 			self.memory_usage = round(100 * (1 - (mem_available / self.memory_total) ))
 
 			# deal with potential memory leak of images not unloading after use
-			if (mem_available < 500):
+			if (mem_available < 400):
 				self.images.check_use()
 
 			self.last_update = now
@@ -1053,14 +1053,14 @@ class ImageManager ():
 		return self.images[ random.randint(0, len(self.images)-1) ]
 
 	""" Returns an image and checks if it's not similar to recent images returned """
-	def get_next (self, rated=True):
+	def get_next (self, current_images=[], rated=True):
 		# get an image to return, and make sure it wasn't returned recently
 		now = time.time()
 		acceptable = False
 
 		while not acceptable:
 			img = self.get_random()
-			if (img.hidden < now and img.file not in self.recent):
+			if (img.hidden < now and img.file not in self.recent and img.file not in current_images):
 				acceptable = True
 
 				# also consider the image rating to determine whether to accept it
@@ -1076,7 +1076,7 @@ class ImageManager ():
 		# make sure the tracking list is limited to avoid images not returning any time soon
 		# note: number ought to be sufficiently high such that no program would show a similar
 		#       number of images on-screen at any time
-		if (len(self.recent) > 15):
+		if (len(self.recent) > 20):
 			self.recent.pop(0)  # remove first (oldest) element in list
 
 		return img
@@ -1171,6 +1171,7 @@ class Image ():
 		self.last_use = time.time()
 		size        = (round(size[0]), round(size[1]))
 		size_string = 'full'
+		do_convert  = False
 
 		# if orientation needs checking, do it here before regular loading
 		# as any changes are done to base file
@@ -1205,12 +1206,18 @@ class Image ():
 					img = self.make_circular(img)
 				else:
 					img = self.scale(size, fill_box, fit_to_square, smooth)
-				self.image[size_string] = img.convert()
+				self.image[size_string] = img
+				do_convert = True
 				# ready to return now
 
 		# if pure blacks need to be removed, do it here after rescaling (smaller file = quicker)
 		if (remove_black):
 			self.image[size_string] = self.remove_pure_black(self.image[size_string])
+			do_convert = True
+
+		# convert to display pixel layout for improved performance
+		if (do_convert):
+			self.image[size_string] = self.image[size_string].convert()
 
 		return self.image[size_string], size_string
 
@@ -1399,7 +1406,7 @@ class Image ():
 	def hide (self, until=9999999999):
 		self.hidden = int(until)  # ensure this is just an integer, not a float, for simplicity
 		# if permanently hiding this image, also set its rating to the lowest possible
-		if (until = 9999999999):
+		if (until == 9999999999):
 			self.do_rate(False, 2)
 
 	""" Adds viewings of this image to a list """
@@ -1984,17 +1991,19 @@ class GUI ():
 class ProgramBase ():
 	def __init__ (self, core=None):
 		# general variables
-		self.core         = core
-		self.gui          = core.gui
-		self.dsize        = core.gui.display_size
-		self.is_active    = False
-		self.active_since = time.time()
-		self.last_update  = 0  # seconds since epoch
-		self.dirty        = True
-		self.first_run    = True
-		self.max_time     = 3600   # in seconds,  1h
-		self.snooze_time  = 86400  # in seconds, 24h
-		self.shown        = []   # list, each item denotes for how long program has been active
+		self.core                = core
+		self.gui                 = core.gui
+		self.dsize               = core.gui.display_size
+		self.is_active           = False
+		self.active_since        = time.time()
+		self.last_update         = 0      # seconds since epoch
+		self.dirty               = True
+		self.first_run           = True
+		self.max_time            = 3600   # in seconds,  1h
+		self.snooze_time         = 86400  # in seconds, 24h
+		self.required_num_images = 20     # minimum number of images required to run
+		self.shown               = []     # list, each item denotes for how long program has been active
+		self.images              = []     # empty list available by default
 
 		# status panel variables
 		self.current_address          = ''
@@ -2011,7 +2020,9 @@ class ProgramBase ():
 		return self.__class__.__name__
 
 	""" any conditions that prevent this program from working should be checked prior to becoming active """
-	def can_run (self):
+	def can_run (self, program_requirements=True):
+		if (program_requirements is False or self.core.get_images_count() < self.required_num_images):
+			return False
 		return True
 
 	""" code to run every turn, needs to signal whether a gui update is needed """
@@ -2169,19 +2180,22 @@ class ProgramBase ():
 		self.gui.draw_text("v{0}".format(version), o='left', x=770, y=6+448, fg='support-dark', has_back=False, onto=self.status_panel)
 
 		# draw status panel icons
-		icon_clock       = self.gui.open_simple_image('assets/icon_clock_b.png')
-		icon_crosshair   = self.gui.open_simple_image('assets/icon_crosshair_b.png')
-		icon_dashboard   = self.gui.open_simple_image('assets/icon_dashboard_b.png')
-		icon_diskette    = self.gui.open_simple_image('assets/icon_diskette_b.png')
-		icon_half_moon   = self.gui.open_simple_image('assets/icon_half_moon_b.png')
-		icon_image       = self.gui.open_simple_image('assets/icon_image_b.png')
-		icon_sun         = self.gui.open_simple_image('assets/icon_sun_b.png')
-		icon_thermometer = self.gui.open_simple_image('assets/icon_thermometer_b.png')
-		icon_wifi        = self.gui.open_simple_image('assets/icon_wifi_b.png')
-		icon_restart     = self.gui.open_simple_image('assets/icon_restart_b.png')
-		icon_power       = self.gui.open_simple_image('assets/icon_power_b.png')
-		button_128       = self.gui.open_simple_image('assets/button_128.png')
-		handle           = self.gui.open_simple_image('assets/icon_more_r.png')
+		icon_clock         = self.gui.open_simple_image('assets/icon_clock_b.png')
+		icon_crosshair     = self.gui.open_simple_image('assets/icon_crosshair_b.png')
+		icon_dashboard     = self.gui.open_simple_image('assets/icon_dashboard_b.png')
+		icon_diskette      = self.gui.open_simple_image('assets/icon_diskette_b.png')
+		icon_dualdisplay   = self.gui.open_simple_image('assets/icon_dualdisplay_b.png')
+		icon_half_moon     = self.gui.open_simple_image('assets/icon_half_moon_b.png')
+		icon_image         = self.gui.open_simple_image('assets/icon_image_b.png')
+		icon_photopatterns = self.gui.open_simple_image('assets/icon_half_moon_b.png')
+		icon_photosoup     = self.gui.open_simple_image('assets/icon_half_moon_b.png')
+		icon_sun           = self.gui.open_simple_image('assets/icon_sun_b.png')
+		icon_thermometer   = self.gui.open_simple_image('assets/icon_thermometer_b.png')
+		icon_wifi          = self.gui.open_simple_image('assets/icon_wifi_b.png')
+		icon_restart       = self.gui.open_simple_image('assets/icon_restart_b.png')
+		icon_power         = self.gui.open_simple_image('assets/icon_power_b.png')
+		button_128         = self.gui.open_simple_image('assets/button_128.png')
+		handle             = self.gui.open_simple_image('assets/icon_more_r.png')
 
 		self.gui.draw_simple_image(handle, o='center', pos=(0.5,  0.967), onto=self.status_panel)
 		self.gui.draw_simple_image(icon_image,         pos=(0.05,  0.08), onto=self.status_panel)
@@ -2205,13 +2219,15 @@ class ProgramBase ():
 		self.gui.draw_simple_image(button_128,       pos=(0.79,  0.6), onto=self.status_panel)
 		self.gui.draw_rectangle(x=0.87, y=0.734, w=118, h=2, onto=self.status_panel)
 
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.13,  0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.315, 0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.50,  0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.685, 0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_half_moon, o='center', pos=(0.685, 0.734), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_restart,   o='center', pos=(0.87,  0.669), onto=self.status_panel)
-		self.gui.draw_simple_image(icon_power,     o='center', pos=(0.87,  0.798), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_dualdisplay,   o='center', pos=(0.13,  0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_photosoup,     o='center', pos=(0.315, 0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_photopatterns, o='center', pos=(0.50,  0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_half_moon,     o='center', pos=(0.685, 0.734), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_restart,       o='center', pos=(0.87,  0.669), onto=self.status_panel)
+		self.gui.draw_simple_image(icon_power,         o='center', pos=(0.87,  0.798), onto=self.status_panel)
+
+		# prepare for blitting
+		self.status_panel.convert()
 
 	""" code to run when this program ceases to be active """
 	def make_inactive (self):
@@ -2228,6 +2244,7 @@ class ProgramBase ():
 
 		self.dirty     = False
 		self.first_run = True
+		self.images    = []  # reset to empty
 		self.gui.set_dirty_full()
 
 	def close (self):
@@ -2270,7 +2287,6 @@ class ProgramBase ():
 			self.gui.draw_text(self.current_address_text,      o='left', x=459, y=169 + self.po)
 			self.gui.draw_simple_image(self.address_qr_image, pos=(0.791, 0.313 + self.por))
 			
-
 	def get_max_time (self):
 		return self.max_time
 
@@ -2280,6 +2296,14 @@ class ProgramBase ():
 
 	def set_shown (self, shown=[]):
 		self.shown = list(shown)  # list() avoids referencing to inbound list object
+
+	""" returns a list of current file paths used by images in use """
+	def get_current_image_paths (self):
+		paths = []
+		for i in self.images:
+			if (i['image'] is not None and i['image'].file is not None):
+				paths.append(i['image'].file)
+		return paths
 
 	def set_status_panel_state (self, panel_open=False, force=False):
 		if (panel_open and (self.status_open is False or force)):
@@ -2297,6 +2321,10 @@ class ProgramBase ():
 
 
 class BlankScreen (ProgramBase):
+	def __init__ (self, core=None):
+		super().__init__(core)
+		self.required_num_images = 0  # removes a minimum of images as a condition to start
+
 	def update (self):
 		# if user touches screen, get active again (so prepare to leave blank screen)
 		# make sure this program gets some time to settle in (ignore input first n seconds)
@@ -2305,10 +2333,6 @@ class BlankScreen (ProgramBase):
 
 		# generally, do nothing (relies on GUI class providing a blank canvas on first run)
 		super().update(ignore=True)
-
-	def draw (self):
-		# call draw function to allow drawing default elements if any
-		super().draw()
 
 
 class DualDisplay (ProgramBase):
@@ -2320,25 +2344,6 @@ class DualDisplay (ProgramBase):
 		self.max_time        = 3.0 * 3600  # n hours
 		if (self.core.is_debug):
 			self.max_time = 600
-
-		self.im = [
-			{  # one
-				'image'    : None,
-				'image_new': None,
-				'alpha'    : 0,
-				'since'    : 0,
-				'max_time' : self.default_time,
-				'swap'     : False
-			},
-			{  # two
-				'image'    : None,
-				'image_new': None,
-				'alpha'    : 0,
-				'since'    : 0,
-				'max_time' : self.default_time,
-				'swap'     : False
-			}
-		]
 
 		self.line_pos           = 0.5
 		self.line_width         = 0
@@ -2354,11 +2359,6 @@ class DualDisplay (ProgramBase):
 		self.picker_alpha       = 1
 		self.preferred_image    = None
 		self.last_swap          = 0
-
-	def can_run (self):
-		if (not self.core.get_images_count() > 20):
-			return False
-		return True
 
 	def update (self):
 		if (self.first_run or self.status_open is False):
@@ -2392,8 +2392,8 @@ class DualDisplay (ProgramBase):
 			if (settle_line_pos):
 				# decide on neutral position - depends on ratings of images
 				# each image's rating can sway by [-.1, +.1]
-				if (self.im[0]['image'] is not None and self.im[1]['image'] is not None):
-					self.neutral_pos = 0.5 + self.im[0]['image'].rate / 10 - self.im[1]['image'].rate / 10
+				if (self.images[0]['image'] is not None and self.images[1]['image'] is not None):
+					self.neutral_pos = 0.5 + self.images[0]['image'].rate / 10 - self.images[1]['image'].rate / 10
 				# get extra amount over neutral position, and take a portion of that off
 				self.line_pos = self.line_pos + 0.2 * (self.neutral_pos - self.line_pos)
 
@@ -2410,18 +2410,18 @@ class DualDisplay (ProgramBase):
 				# do actual rating and swap (if at least some time has past to avoid glitches because of hanging input)
 				if (check_for_swap_over and self.last_swap < now - 0.5):
 					# rate both images
-					self.im[0]['image'].do_rate(self.preferred_image == 0)  # True if line is far right, False otherwise
-					self.im[1]['image'].do_rate(self.preferred_image == 1)  # vice versa, True if far left
+					self.images[0]['image'].do_rate(self.preferred_image == 0)  # True if line is far right, False otherwise
+					self.images[1]['image'].do_rate(self.preferred_image == 1)  # vice versa, True if far left
 
 					# log this action
-					log_value = self.im[0]['image'].file
+					log_value = self.images[0]['image'].file
 					log_value += (' > ',' < ')[self.preferred_image]
-					log_value += self.im[1]['image'].file
+					log_value += self.images[1]['image'].file
 					self.core.data.log_action('dd.rate', log_value)
 
 					# give feedback (both for rating, and swap)
 					# get one image to fade quickly and swap over
-					self.im[ abs(self.preferred_image - 1) ]['swap'] = True
+					self.images[ abs(self.preferred_image - 1) ]['swap'] = True
 					self.last_swap = now
 
 				self.dirty = True
@@ -2461,11 +2461,11 @@ class DualDisplay (ProgramBase):
 				self.dirty = True
 
 			# loop over two image slots to assign, swap, fade, etc.
-			for index, i in enumerate(self.im):
+			for index, i in enumerate(self.images):
 				if (self.first_run):
 					# make sure there is an image
-					i['image']     = self.core.images.get_next()
-					i['image_new'] = self.core.images.get_next()
+					i['image']     = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)
+					i['image_new'] = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)
 					i['since']     = now
 					if (index == 1):
 						i['max_time'] *= 1.5
@@ -2493,7 +2493,7 @@ class DualDisplay (ProgramBase):
 						# reassign and reset timers, etc.
 						i['swap']      = False
 						i['image']     = i['image_new']
-						i['image_new'] = self.core.images.get_next()  # decide on new image early
+						i['image_new'] = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)  # decide on new image early
 						i['alpha']     = 0
 						i['since']     = now
 						i['max_time']  = self.default_time
@@ -2501,8 +2501,8 @@ class DualDisplay (ProgramBase):
 						# adjust max time in case the two sides are too close together for swapping
 						# ideal is for each side to swap at halfway duration of the other
 						if (index == 1):
-							t1 = self.im[0]['since'] + self.im[0]['max_time']
-							t2 = self.im[1]['since'] + self.im[1]['max_time']
+							t1 = self.images[0]['since'] + self.images[0]['max_time']
+							t2 = self.images[1]['since'] + self.images[1]['max_time']
 							if (abs(t1-t2) < self.default_time / 2):
 								i['max_time'] += 1
 					
@@ -2515,11 +2515,21 @@ class DualDisplay (ProgramBase):
 			super().update(ignore=True)
 
 	def make_active (self):
-		# draw the picker surfaces in advance for later reference
+		# get the picker surfaces in advance for later reference
 		self.picker_plus_surf_n = self.gui.open_simple_image('assets/icon_arrow_up_w.png',   remove_black=True)
 		self.picker_plus_surf_a = self.gui.open_simple_image('assets/icon_arrow_up_r.png',   remove_black=True)
 		self.picker_min_surf_n  = self.gui.open_simple_image('assets/icon_arrow_down_w.png', remove_black=True)
 		self.picker_min_surf_a  = self.gui.open_simple_image('assets/icon_arrow_down_r.png', remove_black=True)
+
+		for x in range(0,2):
+			self.images.append({
+				'image'    : None,
+				'image_new': None,
+				'alpha'    : 0,
+				'since'    : 0,
+				'max_time' : self.default_time,
+				'swap'     : False
+			})
 
 		super().make_active()
 
@@ -2530,7 +2540,7 @@ class DualDisplay (ProgramBase):
 		self.picker_min_surf_n  = None
 		self.picker_min_surf_a  = None
 
-		for i in self.im:
+		for i in self.images:
 			if (i['image'] is not None):
 				i['image'].unload( i['since'] )
 			if (i['image_new'] is not None):
@@ -2541,28 +2551,28 @@ class DualDisplay (ProgramBase):
 		# draw two images side-by-side
 		# draw left image
 		self.gui.draw_image(
-			self.im[0]['image'], pos=(0.5 * self.line_pos, 0.5),
+			self.images[0]['image'], pos=(0.5 * self.line_pos, 0.5),
 			size=(1,1),
 			mask=(0, self.line_pos, 0,1),
-			a=1-self.im[0]['alpha'])
+			a=1-self.images[0]['alpha'])
 		# draw new image if available
-		if (self.im[0]['alpha'] > 0):
-			self.gui.draw_image(self.im[0]['image_new'], pos=(0.5 * self.line_pos, 0.5),
+		if (self.images[0]['alpha'] > 0):
+			self.gui.draw_image(self.images[0]['image_new'], pos=(0.5 * self.line_pos, 0.5),
 				size=(1,1),
 				mask=(0, self.line_pos, 0,1),
-				a=self.im[0]['alpha'])
+				a=self.images[0]['alpha'])
 		
 		# draw right image
-		self.gui.draw_image(self.im[1]['image'], pos=(1 - 0.5 * (1 - self.line_pos), 0.5),
+		self.gui.draw_image(self.images[1]['image'], pos=(1 - 0.5 * (1 - self.line_pos), 0.5),
 			size=(1,1),
 			mask=(self.line_pos, 1, 0,1),
-			a=1-self.im[1]['alpha'])
+			a=1-self.images[1]['alpha'])
 		# draw new image if available
-		if (self.im[1]['alpha'] > 0):
-			self.gui.draw_image(self.im[1]['image_new'], pos=(1 - 0.5 * (1 - self.line_pos), 0.5),
+		if (self.images[1]['alpha'] > 0):
+			self.gui.draw_image(self.images[1]['image_new'], pos=(1 - 0.5 * (1 - self.line_pos), 0.5),
 				size=(1,1),
 				mask=(self.line_pos, 1, 0,1),
-				a=self.im[1]['alpha'])
+				a=self.images[1]['alpha'])
 		
 		# draw middle line
 		if (self.line_width > 0):
@@ -2604,9 +2614,9 @@ class PhotoSoup (ProgramBase):
 		self.default_num_images   = 3
 		self.goal_num_images      = 3    # starting number of images shown on-screen
 		self.min_num_images       = 2    # minimum number of images shown on-screen
-		self.max_num_images       = 6    # max number of images shown on-screen
+		self.max_num_images       = 5    # max number of images shown on-screen
 		if (self.core.is_debug):
-			self.max_num_images = 11
+			self.max_num_images = 10
 		self.last_image_addition  = 0    # timestamp
 		self.time_to_pass_sans_ix = 900  # test 20, ideal 900
 		self.time_before_addition = 2700 # test 30, was 1800
@@ -2617,13 +2627,8 @@ class PhotoSoup (ProgramBase):
 		self.active_image         = None
 		self.center               = Vector4(0.5*self.dsize[0], 0.5*self.dsize[1])
 		self.corner_bottom_right  = Vector4(800, 480)
-		self.button_add_photo     = self.gui.open_simple_image('assets/icon_plus.png', keep_transparency=True)
-		self.button_trash         = self.gui.open_simple_image('assets/icon_trash.png', keep_transparency=True)
-
-	def can_run (self):
-		if (not self.core.get_images_count() > 20):
-			return False
-		return True
+		self.button_add_photo     = None
+		self.button_trash         = None
 
 	def update (self):
 		if (self.first_run or self.status_open is False):
@@ -2778,7 +2783,7 @@ class PhotoSoup (ProgramBase):
 
 						else:
 							# renew this image slot
-							i['image'] = self.core.images.get_next()
+							i['image'] = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)
 							i['since'] = now
 							# set x, y, direction, speed
 							i['v'].set(
@@ -2849,13 +2854,19 @@ class PhotoSoup (ProgramBase):
 		else:
 			super().update(ignore=True)
 
+	def make_active (self):
+		self.goal_num_images  = self.default_num_images
+		self.button_add_photo = self.gui.open_simple_image('assets/icon_plus.png', keep_transparency=True)
+		self.button_trash     = self.gui.open_simple_image('assets/icon_trash.png', keep_transparency=True)
+		super().make_active()
+
 	def make_inactive (self):
 		# reset variables to None to free memory
 		for i in self.images:
 			if (i['image'] is not None):
 				i['image'].unload( i['since'] )
-		self.images = []
-		self.goal_num_images = self.default_num_images
+		self.button_add_photo = None
+		self.button_trash     = None
 		super().make_inactive()
 
 	def is_on_sceen (self, a):
@@ -2911,28 +2922,9 @@ class PhotoPatterns (ProgramBase):
 		if (self.core.is_debug):
 			self.max_time = 600
 
-		self.default_time    = 30  # seconds before switching to next photo
-		self.switch_time     = 4   # seconds taken to switch between photos
-		self.im = [
-			{
-				'image'    : None,
-				'image_new': None,
-				'alpha'    : 0,
-				'since'    : 0,
-				'max_time' : self.default_time,
-				'swap'     : False
-			}
-		]
-		# add sufficient copies for all images
-		for x in range(0,4):
-			self.im.append( dict(self.im[0]) )
-
-		self.last_swap = 0
-
-	def can_run (self):
-		if (not self.core.get_images_count() > 20):
-			return False
-		return True
+		self.default_time = 30  # seconds before switching to next photo
+		self.switch_time  = 4   # seconds taken to switch between photos
+		self.last_swap    = 0
 
 	def update (self):
 		if (self.first_run or self.status_open is False):
@@ -2946,10 +2938,15 @@ class PhotoPatterns (ProgramBase):
 
 			# --- default code above ----------
 
+			tapped = (self.core.input.state > self.core.input.RELEASED)
+
 			swapped = False
-			for i in self.im:
-				if (i['image'] is None or self.first_run or (interactive and self.last_swap < now - 0.5)):
-					i['image'] = self.core.images.get_next()
+			for i in self.images:
+				if (i['image'] is None or self.first_run or (tapped and self.last_swap < now - 0.5)):
+					if (i['image'] is not None):
+						# free memory and report time since it appeared
+						i['image'].unload( i['since'] )
+					i['image'] = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)
 					i['since'] = now
 					self.dirty = True
 					swapped = True
@@ -2967,9 +2964,26 @@ class PhotoPatterns (ProgramBase):
 		else:
 			super().update(ignore=True)
 
+	def make_active (self):
+		self.images = [
+			{
+				'image'    : None,
+				'image_new': None,
+				'alpha'    : 0,
+				'since'    : 0,
+				'max_time' : self.default_time,
+				'swap'     : False
+			}
+		]
+		# add sufficient copies for all images
+		for x in range(0,4):
+			self.images.append( dict(self.images[0]) )
+
+		super().make_active()
+
 	def make_inactive (self):
 		# reset variables to None to free memory
-		for i in self.im:
+		for i in self.images:
 			if (i['image'] is not None):
 				i['image'].unload( i['since'] )
 			if (i['image_new'] is not None):
@@ -2983,14 +2997,14 @@ class PhotoPatterns (ProgramBase):
 	def draw (self):
 		# draw main image
 		self.gui.draw_image(
-			self.im[0]['image'],         pos=(0.4, 0.5),   size=(0.8, 1), mask=(0, 0.8125, 0,1), a=1-self.im[0]['alpha'])
+			self.images[0]['image'],         pos=(0.4, 0.5),   size=(0.8, 1), mask=(0, 0.8125, 0,1), a=1-self.images[0]['alpha'])
 		# draw new main image if available
-		if (self.im[0]['alpha'] > 0):
+		if (self.images[0]['alpha'] > 0):
 			self.gui.draw_image(
-				self.im[0]['image_new'], pos=(0.406, 0.5), size=(1,1),    mask=(0, 0.8125, 0,1), a=self.im[0]['alpha'])
+				self.images[0]['image_new'], pos=(0.406, 0.5), size=(1,1),    mask=(0, 0.8125, 0,1), a=self.images[0]['alpha'])
 
 		# draw side images
-		for index, i in enumerate(self.im):
+		for index, i in enumerate(self.images):
 			if (index == 0):
 				continue  # skip the main image
 			# draw each image
