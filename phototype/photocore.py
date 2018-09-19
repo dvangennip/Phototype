@@ -57,7 +57,7 @@ def logging (message):
 def main ():
 	# first check if start is not blocked
 	if (os.path.exists('nostart.txt')):
-		print('Lock file present, will not start photocore.')
+		print('nostart.txt file present, will not start photocore.')
 		exit(0)
 		
 	# define here so it's available later, also in case of exception handling
@@ -92,7 +92,7 @@ def main ():
 		pygame.quit()
 
 		# trigger a system shutdown if requested
-		if (core.do_shutdown):
+		if (core is not None and core.do_shutdown):
 			time.sleep(1)
 			os.system('sudo shutdown now')
 
@@ -109,13 +109,15 @@ class Photocore ():
 		signal.signal(signal.SIGINT,  self.handle_signal)  # Interrupt (^C)
 
 		# init variables to default values
-		self.do_exit      = False
-		self.do_shutdown  = False
-		self.is_debug     = False
-		self.use_network  = True   # can any web, import, or update services be run?
-		self.last_update  = 0
-		self.memory_usage = 0
-		self.memory_total = round(psutil.virtual_memory().total / (1024*1024))
+		self.do_exit                = False
+		self.do_shutdown            = False
+		self.is_debug               = False
+		self.use_network            = True   # can any web, import, or update services be run?
+		self.last_update            = 0
+		self.memory_usage           = 0
+		self.memory_total           = round(psutil.virtual_memory().total / (1024*1024))
+		self.disk_usage             = 0
+		self.disk_usage_last_update = 0
 
 		# check for arguments passed in
 		for argument in sys.argv:
@@ -290,8 +292,10 @@ class Photocore ():
 
 		return False
 
+	""" returns True if the desired program is the same as the currently active one """
 	def set_preferred (self, index=0):
 		self.program_preferred_index = index
+		return (self.program_preferred_index == self.program_active_index)
 
 	def add_program (self, name):
 		# create instance of program class (based on name)
@@ -330,7 +334,7 @@ class Photocore ():
 		return self.memory_usage
 
 	def get_sensor_distance (self):
-		return self.distance.get()
+		return self.distance.get_distance()
 
 	def get_display_brightness (self):
 		return self.display.get_brightness()
@@ -356,7 +360,10 @@ class Photocore ():
 
 	""" Returns disk space usage in percentage """
 	def get_disk_space (self):
-		return psutil.disk_usage('/').percent
+		if (time.time() > self.disk_usage_last_update + 10):
+			self.disk_usage = psutil.disk_usage('/').percent
+			self.disk_usage_last_update = time.time()
+		return self.disk_usage
 
 	def get_temperature (self):
 		if (sys.platform == 'darwin'):
@@ -517,7 +524,7 @@ class DataManager ():
 		self.dirty       = False
 		self.last_save   = 0  # timestamp
 		self.last_export = time.time()  # timestamp at now, to avoid immediate export
-		self.min_time_between_saves  = 120  # avoid excessive writing to disk
+		self.min_time_between_saves  = 180   # avoid excessive writing to disk
 		self.min_time_between_export = 7200  # once every 2 hours
 
 		# os.uname().nodename
@@ -856,7 +863,7 @@ class DistanceSensor ():
 			self.process.join()
 
 	""" Returns distance in meters """
-	def get (self):
+	def get_distance (self):
 		return self.distance
 
 	""" This function is run as a separate process to avoid locking due to GPIO polling """
@@ -2124,14 +2131,20 @@ class ProgramBase ():
 				# first check if tap is within the vertical range
 				if (self.core.input.pos.y > (288 + self.po) and self.core.input.pos.y < (416 + self.po)):
 					# check for program buttons
+					program_remains_same = False
 					if (self.core.input.pos.x > 40 and self.core.input.pos.x < 168):
-						self.core.set_preferred(1)
+						program_remains_same = self.core.set_preferred(1)
 					elif (self.core.input.pos.x > 188 and self.core.input.pos.x < 316):
-						self.core.set_preferred(2)
+						program_remains_same = self.core.set_preferred(2)
 					elif (self.core.input.pos.x > 336 and self.core.input.pos.x < 464):
-						self.core.set_preferred(3)
+						program_remains_same = self.core.set_preferred(3)
 					elif (self.core.input.pos.x > 484 and self.core.input.pos.x < 612):
-						self.core.set_preferred(0)
+						program_remains_same = self.core.set_preferred(0)
+
+					print(program_remains_same)
+					if (program_remains_same):
+						# we remain with this program, so just close the status panel
+						self.toggle_status_panel()
 
 			if (self.core.input.state == self.core.input.RELEASED_HOLD):
 				# first check if tap is within the horizontal range (with a 10px margin either way)
@@ -2187,8 +2200,8 @@ class ProgramBase ():
 		icon_dualdisplay   = self.gui.open_simple_image('assets/icon_dualdisplay_b.png')
 		icon_half_moon     = self.gui.open_simple_image('assets/icon_half_moon_b.png')
 		icon_image         = self.gui.open_simple_image('assets/icon_image_b.png')
-		icon_photopatterns = self.gui.open_simple_image('assets/icon_half_moon_b.png')
-		icon_photosoup     = self.gui.open_simple_image('assets/icon_half_moon_b.png')
+		icon_photopatterns = self.gui.open_simple_image('assets/icon_photopatterns_b.png')
+		icon_photosoup     = self.gui.open_simple_image('assets/icon_photosoup_b.png')
 		icon_sun           = self.gui.open_simple_image('assets/icon_sun_b.png')
 		icon_thermometer   = self.gui.open_simple_image('assets/icon_thermometer_b.png')
 		icon_wifi          = self.gui.open_simple_image('assets/icon_wifi_b.png')
