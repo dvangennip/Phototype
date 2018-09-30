@@ -44,7 +44,7 @@ else:
 """
 # ----- GLOBAL FUNCTIONS ------------------------------------------------------
 
-version = 9
+version = 10
 
 """ globally available logging code for debugging purposes """
 def logging (message):
@@ -752,9 +752,9 @@ class DisplayManager ():
 				current_time = time.localtime()
 				tt = current_time.tm_hour + current_time.tm_min/60.0  # [0-23.98]
 
-				# at night (22.5 -> 6) just use low value
-				if (tt > 6 and tt < 22.5):
-					auto_brightness = (high - low) * sin(((tt-6) / (22.5-6)) * pi) + low
+				# at night (21.5 -> 6) just use low value
+				if (tt > 6 and tt < 21.5):
+					auto_brightness = (high - low) * sin(((tt-6) / (21.5-6)) * pi) + low
 				self.set_brightness(auto_brightness)
 
 	def close (self):
@@ -1141,7 +1141,7 @@ class ImageManager ():
 			marked_for_deletion = True
 		else:
 			# use photocore's Image class for resizing and saving
-			p = Image(in_file_path)
+			p = Image(in_file_path, use_convert=False)
 			surface, size_string = p.get((800,480), fill_box=True, remove_black=True, check_orientation=True)
 			#print('Resizing: ', in_file_path, surface.get_size())
 			result = p.save_to_file(size_string, out_file_path)
@@ -1163,12 +1163,13 @@ class ImageManager ():
 
 
 class Image ():
-	def __init__ (self, file=None, shown=[], rate=0):
-		self.file      = file
-		self.image     = {'full': None}  # only load when necessary
-		self.size      = (0,0)           # in pixels x,y
-		self.is_loaded = False
-		self.last_use  = 0
+	def __init__ (self, file=None, shown=[], rate=0, use_convert=True):
+		self.file        = file
+		self.image       = {'full': None}  # only load when necessary
+		self.size        = (0,0)           # in pixels x,y
+		self.is_loaded   = False
+		self.last_use    = 0
+		self.use_convert = use_convert
 
 		self.hidden    = 0      # timestamp until when image is hidden
 		self.rate      = rate   # default is 0, range is [-1, 1]
@@ -1223,14 +1224,16 @@ class Image ():
 			do_convert = True
 
 		# convert to display pixel layout for improved performance
-		if (do_convert):
+		if (do_convert and self.use_convert):
 			self.image[size_string] = self.image[size_string].convert()
 
 		return self.image[size_string], size_string
 
 	def load (self):
 		# load image (also call convert for a speed-up)
-		self.image['full'] = pygame.image.load(self.file).convert()
+		self.image['full'] = pygame.image.load(self.file)
+		if (self.use_convert):
+			self.image['full'] = self.image['full'].convert()
 		self.size          = self.image['full'].get_size()
 		self.is_loaded = True
 
@@ -2005,7 +2008,8 @@ class ProgramBase ():
 		self.active_since        = time.time()
 		self.last_update         = 0      # seconds since epoch
 		self.dirty               = True
-		self.first_run           = True
+		self.first_run           = True   # set to true upon becoming active again
+		self.run_count           = 0      # +1 on every time the program is run
 		self.max_time            = 3600   # in seconds,  1h
 		self.snooze_time         = 86400  # in seconds, 24h
 		self.required_num_images = 20     # minimum number of images required to run
@@ -2141,7 +2145,6 @@ class ProgramBase ():
 					elif (self.core.input.pos.x > 484 and self.core.input.pos.x < 612):
 						program_remains_same = self.core.set_preferred(0)
 
-					print(program_remains_same)
 					if (program_remains_same):
 						# we remain with this program, so just close the status panel
 						self.toggle_status_panel()
@@ -2255,9 +2258,10 @@ class ProgramBase ():
 		self.set_status_panel_state(False, force=True)
 		self.status_panel = None
 
-		self.dirty     = False
-		self.first_run = True
-		self.images    = []  # reset to empty
+		self.dirty          = False
+		self.first_run      = True
+		self.run_count     += 1
+		self.images         = []  # reset to empty
 		self.gui.set_dirty_full()
 
 	def close (self):
@@ -2336,7 +2340,8 @@ class ProgramBase ():
 class BlankScreen (ProgramBase):
 	def __init__ (self, core=None):
 		super().__init__(core)
-		self.required_num_images = 0  # removes a minimum of images as a condition to start
+		self.required_num_images = 0     # removes a minimum of images as a condition to start
+		self.max_time            = 60    # in seconds, only for first run
 
 	def update (self):
 		# if user touches screen, get active again (so prepare to leave blank screen)
@@ -2346,6 +2351,14 @@ class BlankScreen (ProgramBase):
 
 		# generally, do nothing (relies on GUI class providing a blank canvas on first run)
 		super().update(ignore=True)
+
+	def make_active(self):
+		self.max_time = 7200  # in seconds, 2h
+		super().make_active()
+
+		# open with status panel visible on first run
+		if (self.run_count <= 1):
+			self.set_status_panel_state(True, True)
 
 
 class DualDisplay (ProgramBase):
@@ -2825,9 +2838,9 @@ class PhotoSoup (ProgramBase):
 							# distance from center -> factor of the current angle's adjustment to the center angle
 							center_distance = i['v'].get_distance_2D(self.center)
 							# only continue to adjust if distance is close to edge
-							if (center_distance > 0.9 * self.dsize[1]):
+							if (center_distance > 0.7 * self.dsize[1]):
 								# factor is limited to .01 to avoid abrupt changes
-								center_factor   = min(max(1.0 * center_distance / self.dsize[1], 0), 0.01)
+								center_factor   = min(max(1.0 * center_distance / self.dsize[1], 0), 0.015)
 								# update the angle accordingly
 								i['v'].z = (1 - center_factor) * i['v'].z + center_factor * center_angle
 
@@ -2893,8 +2906,6 @@ class PhotoSoup (ProgramBase):
 
 	""" attractive force scales linearly with the distance between a and b """
 	def get_force_attraction (self, a, b):
-		if (a['user_control'] or b['user_control']):
-			return -0.0002 * a['v'].get_distance_2D(b['v'])
 		return 0.0001 * a['v'].get_distance_2D(b['v'])
 
 	def get_force_repulsion (self, a, b):
