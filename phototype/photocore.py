@@ -44,7 +44,7 @@ else:
 """
 # ----- GLOBAL FUNCTIONS ------------------------------------------------------
 
-version = 10
+version = 11
 
 """ globally available logging code for debugging purposes """
 def logging (message):
@@ -618,13 +618,44 @@ class DataManager ():
 
 			self.last_export = time.time()
 
-			# also upload to external save
-			#self.save_external()
+			# also upload to external location
+			if (self.core.use_network):
+				self.save_external()
 
 	def save_external (self):
-		pass  # TODO not implemented yet
-		# with open('data.log', 'r') as f:
-		# 	r = requests.post('http://project.sinds194.nl/upload/', files={'{0}_data.log'.format(os.uname().hostname): f})
+		if (self.core.is_debug):
+			print('DataManager: uploading data...')
+		
+		success = False
+		hostname = 'test'  # by default, macOS gives convulated hostname
+		if (sys.platform != 'darwin'):
+			hostname = gethostname()
+
+		success = self.save_external_uploader('data.log', hostname)
+		if (success):
+			success = self.save_external_uploader('data.bin', hostname)
+		if (success):
+			success = self.save_external_uploader('errors.log', hostname)
+		
+	def save_external_uploader (self, filename, hostname):
+		success = False
+
+		try:
+			with open(filename, 'rb') as datafile:
+				r = requests.post('http://project.sinds1984.nl/phototype/data_uploader.php', files={'f': ('{0}_{1}'.format(hostname, filename), datafile)})
+
+				if (r.status_code == 200):
+					response = r.json()
+					if (response['success']):
+						success = True
+						if (self.core.is_debug):
+							print('DataManager: uploading of {0} successful.'.format(filename))
+					else:
+						logging('DataManager: uploading data failed. - ' + str(response))
+		except Exception as e:
+			logging('DataManager: uploading data failed. - ' + str(e))
+
+		return success
 
 	def get_program_match (self, name):
 		for program in self.data['programs']:
@@ -1169,7 +1200,7 @@ class Image ():
 		self.size        = (0,0)           # in pixels x,y
 		self.is_loaded   = False
 		self.last_use    = 0
-		self.use_convert = use_convert
+		self.use_convert = use_convert     # set to False if class is used without a display available
 
 		self.hidden    = 0      # timestamp until when image is hidden
 		self.rate      = rate   # default is 0, range is [-1, 1]
