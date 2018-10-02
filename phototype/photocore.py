@@ -44,7 +44,7 @@ else:
 """
 # ----- GLOBAL FUNCTIONS ------------------------------------------------------
 
-version = 11
+version = 12
 
 """ globally available logging code for debugging purposes """
 def logging (message):
@@ -83,6 +83,8 @@ def main ():
 				pygame.time.wait( max(40 - dt, 10) )
 	except Exception as e:
 		with open('errors.log', 'a') as f:
+			t = time.strftime("%Y-%m-%d %H:%M:%S - ", time.localtime())
+			f.write(t + '\n')
 			traceback.print_exc(file=f)  #sys.stdout
 		# make a final attempt to close gracefully
 		if (core is not None):
