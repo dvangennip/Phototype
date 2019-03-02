@@ -2991,14 +2991,50 @@ class PhotoPatterns (ProgramBase):
 
 			# --- default code above ----------
 
-			tapped = (self.core.input.state > self.core.input.RELEASED)
+			# check user input
+
+			# act on user input
+
+			# passive behaviour
+
+			# ----
+
+			# # pick position of line, based on input
+			# # if user drag action started near the line, drag it and let line follow
+			# if (self.core.input.state >= self.core.input.DRAGGING):
+			# 	# first check if all this actually started close to the line's resting position
+			# 	start_x = abs(self.core.input.drag[0].x / self.gui.display_size[0] - self.neutral_pos)
+			# 	if (start_x < 0.06):
+			# 		self.line_pos = self.core.input.pos.x / self.gui.display_size[0]
+
+			# 		if (self.core.input.state == self.core.input.RELEASED_DRAG):
+			# 			# begin rating, feedback, swap over
+			# 			check_for_swap_over = True
+			# 	else:
+			# 		settle_line_pos = True
+			# else:
+			# 	settle_line_pos = True
+			
+			# # bring line position back to normal, without abrupt change
+			# if (settle_line_pos):
+			# 	# decide on neutral position - depends on ratings of images
+			# 	# each image's rating can sway by [-.1, +.1]
+			# 	if (self.images[0]['image'] is not None and self.images[1]['image'] is not None):
+			# 		self.neutral_pos = 0.5 + self.images[0]['image'].rate / 10 - self.images[1]['image'].rate / 10
+			# 	# get extra amount over neutral position, and take a portion of that off
+			# 	self.line_pos = self.line_pos + 0.2 * (self.neutral_pos - self.line_pos)
+
+			tapped = (self.core.input.state > self.core.input.RELEASED and self.core.input.pos.x > 650)
 
 			swapped = False
-			for i in self.images:
+			for index, i in enumerate(self.images):
 				if (i['image'] is None or self.first_run or (tapped and self.last_swap < now - 0.5)):
 					if (i['image'] is not None):
 						# free memory and report time since it appeared
-						i['image'].unload( i['since'] )
+						if (index == 0):
+							i['image'].unload( i['since'] )
+						else:
+							i['image'].unload()  # don't count time shown for small images
 					i['image'] = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)
 					i['since'] = now
 					self.dirty = True
@@ -3025,7 +3061,8 @@ class PhotoPatterns (ProgramBase):
 				'alpha'    : 0,
 				'since'    : 0,
 				'max_time' : self.default_time,
-				'swap'     : False
+				'swap'     : False,
+				'v'        : Vector4()
 			}
 		]
 		# add sufficient copies for all images
@@ -3036,15 +3073,15 @@ class PhotoPatterns (ProgramBase):
 
 	def make_inactive (self):
 		# reset variables to None to free memory
-		for i in self.images:
+		for index, i in enumerate(self.images):
 			if (i['image'] is not None):
-				i['image'].unload( i['since'] )
+				if (index == 0):
+					i['image'].unload( i['since'] )
+				else:
+					i['image'].unload()  # don't count time shown for small images
 			if (i['image_new'] is not None):
 				i['image_new'].unload()
-			i['alpha']    = 0
-			i['since']    = 0
-			i['max_time'] = self.default_time
-			i['swap']     = False
+		self.images = []
 		super().make_inactive()
 
 	def draw (self):
