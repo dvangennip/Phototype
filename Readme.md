@@ -16,8 +16,8 @@ Developed on Raspbian Jessie Lite ([use the latest image][2]). After install, up
 
 ### Login
 Username: pi
-Password: (omitted)
-Hostname: (omitted)
+Password: proto-one, photo-two, etc.
+Hostname: protopi1, protopi2, etc.
 
 Adjust password via the `passwd` command. Hostname can be set via the `raspi-config` tool.
 
@@ -41,14 +41,14 @@ Go through `raspi-config` options. First, make sure all disk space can be used. 
 
 **manual install:**
 - python-multitouch ([https://github.com/pimoroni/python-multitouch][6])
-- [DropzoneJS][7] (used for uploading images)
+- [DropzoneJS][7] (used for uploading images, included in this repo)
 
 ## Folder structure
 The phototype code expects two additional folders to be available beside the `phototype` folder. These folders should be named `images` and `uploads`. Newly uploaded files will be placed in the `uploads` folder and resized, adjusted, and finally moved to the `images` folder by the scanner part of `photocore.py`.
 
 The overall structure looks as follows:
 
-	Phototype (root folder, goes into user folder (~))
+	phototype (root folder, goes into user folder (~))
 	|
 	|- casing                    (not required to run)
 	|- images
@@ -101,7 +101,7 @@ To add a new network, open the `wpa_supplicant` file.
 Add a network as follows:
 
 	network={
-	  ssid="The_ESSID"
+	  ssid="Your_ESSID"
 	  psk="Your_wifi_password"
 	}
 
@@ -119,7 +119,7 @@ This is not used, so it can be disabled via the `bluetoothctl` tool. Use the com
 ### Getting and setting date and time
 Like every Debian distribution, get the time with just `date`. On boot, a RPi will attempt to use the network to set its date and time. When unavailable, it continues from the last known time. Setting is done as follows:
 
-	sudo date --set 1998-11-02 
+	sudo date --set 2019-02-21 
 	sudo date --set 21:08:00
 
 ### Serial connection

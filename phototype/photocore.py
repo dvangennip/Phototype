@@ -44,7 +44,7 @@ else:
 """
 # ----- GLOBAL FUNCTIONS ------------------------------------------------------
 
-version = 12
+version = 13
 
 """ globally available logging code for debugging purposes """
 def logging (message):
@@ -629,35 +629,31 @@ class DataManager ():
 			print('DataManager: uploading data...')
 		
 		success = False
-		hostname = 'test'  # by default, macOS gives convulated hostname
+		self.hostname = 'test'  # by default, macOS gives convulated hostname
 		if (sys.platform != 'darwin'):
-			hostname = gethostname()
+			self.hostname = gethostname()
 
-		success = self.save_external_uploader('data.log', hostname)
-		if (success):
-			success = self.save_external_uploader('data.bin', hostname)
-		if (success):
-			success = self.save_external_uploader('errors.log', hostname)
+		self.save_external_process = Process(target=self.save_external_uploader)
+		self.save_external_process.start()
 		
-	def save_external_uploader (self, filename, hostname):
-		success = False
-
+	def save_external_uploader (self):
 		try:
-			with open(filename, 'rb') as datafile:
-				r = requests.post('http://project.sinds1984.nl/phototype/data_uploader.php', files={'f': ('{0}_{1}'.format(hostname, filename), datafile)})
+			for filename in ['data.log', 'data.bin', 'errors.log']:
+				with open(filename, 'rb') as datafile:
+					r = requests.post('http://project.sinds1984.nl/phototype/data_uploader.php', files={'f': ('{0}_{1}'.format(self.hostname, filename), datafile)})
 
-				if (r.status_code == 200):
-					response = r.json()
-					if (response['success']):
-						success = True
-						if (self.core.is_debug):
-							print('DataManager: uploading of {0} successful.'.format(filename))
-					else:
-						logging('DataManager: uploading data failed. - ' + str(response))
+					if (r.status_code == 200):
+						response = r.json()
+						if (response['success']):
+							if (self.core.is_debug):
+								print('DataManager: uploading of {0} successful.'.format(filename))
+						else:
+							logging('DataManager: uploading data failed. - ' + str(response))
+		# ignore any key input (handled by main thread)
+		except KeyboardInterrupt:
+			pass
 		except Exception as e:
 			logging('DataManager: uploading data failed. - ' + str(e))
-
-		return success
 
 	def get_program_match (self, name):
 		for program in self.data['programs']:
