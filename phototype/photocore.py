@@ -4,7 +4,7 @@
 # ----- IMPORT LIBRARIES ------------------------------------------------------
 
 from hashlib import md5
-from math import sqrt, pi, cos, sin, atan2
+from math import sqrt, pi, cos, sin, atan2, ceil
 from multiprocessing import Process, Queue
 import os
 import pickle
@@ -2975,8 +2975,11 @@ class PhotoPatterns (ProgramBase):
 		if (self.core.is_debug):
 			self.max_time = 600
 
-		self.default_time = 30  # seconds before switching to next photo
-		self.switch_time  = 4   # seconds taken to switch between photos
+		self.default_time = 900  # seconds before switching to next photo
+		self.switch_time  = 3    # seconds taken to switch between photos
+		if (self.core.is_debug):
+			self.default_time = 10
+			self.switch_time  = 1
 		self.last_swap    = 0
 
 	def update (self):
@@ -2992,58 +2995,83 @@ class PhotoPatterns (ProgramBase):
 			# --- default code above ----------
 
 			# check user input
+			tapped       = (self.core.input.state > self.core.input.RELEASED and self.core.input.pos.x > 650)
+			tapped_index = -1
+			swapped      = False
+
+			# check which image slot was tapped but only if some time-out was observed
+			if (tapped and self.last_swap < now - 0.5):
+				# set index to the image that was tapped (1 for top, 4 for bottom, 0 is main image)
+				tapped_index = ceil((self.core.input.pos.y / 480.0) * 4)
+				self.images[0]['swap']            = True
+				self.images[tapped_index]['swap'] = True
 
 			# act on user input
 
-			# passive behaviour
+			## image at tapped_index becomes main image (index 0)
+			## also gets a rating increase (minor at 0.05?)
 
-			# ----
+			## image at tapped_index gets replaced with a new one
 
-			# # pick position of line, based on input
-			# # if user drag action started near the line, drag it and let line follow
-			# if (self.core.input.state >= self.core.input.DRAGGING):
-			# 	# first check if all this actually started close to the line's resting position
-			# 	start_x = abs(self.core.input.drag[0].x / self.gui.display_size[0] - self.neutral_pos)
-			# 	if (start_x < 0.06):
-			# 		self.line_pos = self.core.input.pos.x / self.gui.display_size[0]
+			## log this user action
 
-			# 		if (self.core.input.state == self.core.input.RELEASED_DRAG):
-			# 			# begin rating, feedback, swap over
-			# 			check_for_swap_over = True
-			# 	else:
-			# 		settle_line_pos = True
-			# else:
-			# 	settle_line_pos = True
-			
-			# # bring line position back to normal, without abrupt change
-			# if (settle_line_pos):
-			# 	# decide on neutral position - depends on ratings of images
-			# 	# each image's rating can sway by [-.1, +.1]
-			# 	if (self.images[0]['image'] is not None and self.images[1]['image'] is not None):
-			# 		self.neutral_pos = 0.5 + self.images[0]['image'].rate / 10 - self.images[1]['image'].rate / 10
-			# 	# get extra amount over neutral position, and take a portion of that off
-			# 	self.line_pos = self.line_pos + 0.2 * (self.neutral_pos - self.line_pos)
+			# default passive behaviour (happens without any user input)
 
-			tapped = (self.core.input.state > self.core.input.RELEASED and self.core.input.pos.x > 650)
+			## images not replaced recently get swapped out occassionally after some random amount of time has passed
+			## however, the main image remains as is until user input is received
 
-			swapped = False
 			for index, i in enumerate(self.images):
-				if (i['image'] is None or self.first_run or (tapped and self.last_swap < now - 0.5)):
-					if (i['image'] is not None):
-						# free memory and report time since it appeared
-						if (index == 0):
-							i['image'].unload( i['since'] )
+				# decide whether to swap this image
+				if (i['image'] is None or self.first_run):
+					# make sure there is an image
+					i['image']     = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)
+					i['image_new'] = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)
+					i['since']     = now
+				elif (index == tapped_index or (index == 0 and tapped_index != -1)):
+					i['swap'] = True
+
+					# also increase rating for this image slot (not the main image)
+					if (index != 0):
+						i['image'].do_rate(delta=0.1)
+
+				# perform image swap
+				if (i['swap'] or (index != 0 and i['since'] < now - i['max_time'] + self.switch_time)):
+					if (index != 0):
+						# set alpha for new image fade-in
+						i['alpha'] = max(min((now - (i['since'] + i['max_time'] - self.switch_time)) / self.switch_time, 1), 0)
+
+					# once time for current image is up, switch over
+					if (i['swap'] or (index != 0 and i['since'] < now - i['max_time'])):
+						# unload old image
+						if (i['image'] is not None):
+							self.core.data.set_dirty()
+							# free memory and report time since it appeared
+							if (index == 0):
+								i['image'].unload( i['since'] )
+							else:
+								i['image'].unload()  # don't count time shown for small images
+
+						# assign a new image, reset timers, etc.
+						if (index == 0 and tapped_index != -1):
+							# set new image to tapped image
+							i['image'] = self.images[tapped_index]['image']
 						else:
-							i['image'].unload()  # don't count time shown for small images
-					i['image'] = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)
-					i['since'] = now
+							i['image'] = i['image_new']
+						i['image_new'] = self.core.images.get_next(current_images=self.get_current_image_paths(), rated=True)  # decide on new image early
+						i['swap']     = False
+						i['alpha']    = 0
+						i['since']    = now
+						i['max_time'] = self.default_time * (random.random() + 0.5)
+
+						swapped = True
+
 					self.dirty = True
-					swapped = True
-			if (swapped):
+					
+			if (tapped and swapped):
 				self.last_swap = now
 
 				# log this action
-				#self.core.data.log_action('pp.pick', '{0}, of {1} pattern'.format(i['image'].file, len(self.images)))
+				self.core.data.log_action('pp.pick', '{0}, in slot {1}'.format(self.images[0]['image'].file, tapped_index))
 
 		# --- default code below ----------
 
