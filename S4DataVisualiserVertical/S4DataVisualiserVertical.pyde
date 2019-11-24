@@ -15,14 +15,15 @@ time_factor      = 1
 max_interactions = 1
 use_pdf          = False
 font             = None
+participant_list = [1,2,3,4,5,6,7,8,9,10,11,51,52,53]
 
 def settings ():
     global use_pdf
     
     if (use_pdf):
-        size(1050, 1400, PDF, os.path.join(data_folder, 'S4-data-visual.pdf'))
+        size(1300, 1600, PDF, os.path.join(data_folder, 'S4-data-visual.pdf'))
     else:
-        size(1050, 1400)
+        size(1300, 1600)
 
 def setup ():
     global data, data_folder, time_factor, max_time, max_interactions, font, all_actions
@@ -31,7 +32,7 @@ def setup ():
     background(0,0,100)
 
     # import data for all participants
-    for p in range(1,12):
+    for p in participant_list:
         data_path = os.path.join(data_folder, 'p' + str(p), 'p'+str(p)+'_data_processed.bin')
         participant_data = {
             'participant'     : p,
@@ -83,37 +84,30 @@ def draw ():
     x_offset   = 100
     x_stepsize = 80
     
+    activities = {}
+    
     rectMode(CORNER)
     ellipseMode(CENTER)
     
     # first draw labels and lines, for visuals to draw on top
     
     # add lines per week
-    week_height  = (7 * 24 * 60 * 60) * time_factor
-    line_width = (len(data) + 1) * x_stepsize  # +1 for the all data row at the end
-    print(line_width)
+    week_height = (7 * 24 * 60 * 60) * time_factor
+    line_width  = (len(data) + 1) * x_stepsize  # +1 for the all data row at the end
+    # print(line_width)
+    weeks       = int(max_time / (3600 * 24 * 7))
     
-    stroke(0,0,80)  # grey
-    strokeWeight(2)
-    strokeCap(ROUND)
-    
-    line(x_offset-55, y_offset,                 x_offset + line_width-30, y_offset)
-    line(x_offset-55, y_offset +   week_height, x_offset + line_width-30, y_offset +   week_height)
-    line(x_offset-55, y_offset + 2*week_height, x_offset + line_width-30, y_offset + 2*week_height)
-    line(x_offset-55, y_offset + 3*week_height, x_offset + line_width-30, y_offset + 3*week_height)
-    line(x_offset-55, y_offset + 4*week_height, x_offset + line_width-30, y_offset + 4*week_height)
-    line(x_offset-55, y_offset + 5*week_height, x_offset + line_width-30, y_offset + 5*week_height)
-    
-    # add labels per line
-    fill(0,0,40)  # grey
-    textAlign(CENTER)
-    textFont(font, 24)
-    text('0w', x_offset-80, y_offset + 5)
-    text('1w', x_offset-80, y_offset +   week_height + 5)
-    text('2w', x_offset-80, y_offset + 2*week_height + 5)
-    text('3w', x_offset-80, y_offset + 3*week_height + 5)
-    text('4w', x_offset-80, y_offset + 4*week_height + 5)
-    text('5w', x_offset-80, y_offset + 5*week_height + 5)
+    for w in range(0,weeks+1):
+        stroke(0,0,80)  # grey
+        strokeWeight(1.5)
+        strokeCap(ROUND)
+        line(x_offset-55, y_offset + w*week_height, x_offset + line_width-30, y_offset + w*week_height)
+        
+        # add labels per line
+        fill(0,0,40)  # grey
+        textAlign(CENTER)
+        textFont(font, 24)
+        text(str(w) + 'w', x_offset-80, y_offset + w*week_height + 5)
     
     # draw visuals per participant
     for p in data:
@@ -146,6 +140,8 @@ def draw ():
                     fill(30, hsb_saturation, 100)  # green
                 elif (ph['name'] == 'PhotoSoup'):
                     fill(15, hsb_saturation, 100)  # yellow
+                elif (ph['name'] == 'PhotoPatterns'):
+                    fill(50, hsb_saturation, 100)  # cyan
                 else:
                     noFill()  # nothing gets drawn in combination with noStroke
                 
@@ -158,8 +154,10 @@ def draw ():
                 fill(53, 75, 75)  # blue
             elif (ix['action'] == 'ps.flung'):
                 fill(100, 75, 75)  # magenta
-            else:
+            elif (ix['action'] == 'pp.pick'):
                 fill(75, 75, 75)  # purple
+            else:
+                fill(0, 0, 75)  # grey
             ellipse(x_offset + random(-25,25), y_point + y_offset, 5, 5)
         
         # adjust offset for next iteration
@@ -174,10 +172,17 @@ def draw ():
             fill(53, 75, 75)  # blue
         elif (act['action'] == 'ps.flung'):
             fill(100, 75, 75)  # magenta
+        elif (ix['action'] == 'pp.pick'):
+                fill(75, 75, 75)  # purple
         else:
-            fill(75, 75, 75)  # purple
+            if not (act['action'] in activities):
+                activities[act['action']] = True
+            fill(0, 0, 75)  # grey
         # draw the points with some randomness to their position to avoid overlap
         ellipse(x_offset + 0.1*x_stepsize*randomGaussian(), y_point + y_offset + 2*randomGaussian(), 5, 5)
+    
+    # show all unhandled activities
+    # print(activities)
     
     # no need to redraw
     noLoop()

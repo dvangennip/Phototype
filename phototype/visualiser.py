@@ -23,14 +23,16 @@ info on the visualisation step.
 # ----- GLOBAL FUNCTIONS ------------------------------------------------------
 
 
-data_source_folder     = '../S4 Data/'
-min_participant_number = 1
-max_participant_number = 12
+data_source_folder     = '../../S4 Data/'
+# min_participant_number = 1
+# max_participant_number = 12
+participant_list       = [1,2,3,4,5,6,7,8,9,10,11,51,52,53]
 
 def main():
 	current_directory = os.getcwd()
-	for p in range (min_participant_number, max_participant_number):
+	for p in participant_list:
 		data_folder = os.path.join(current_directory, data_source_folder, 'p' + str(p))
+		# print(data_folder)
 		if os.path.exists(data_folder):
 			# set current working directory (makes things easier down the track)
 			os.chdir(data_folder)
@@ -41,6 +43,8 @@ def main():
 			#dv.visualise()
 			
 			print('Done with p' + str(p))
+		else:
+			print('No data for p' + str(p))
 
 	print('==> DONE <==')
 
@@ -104,6 +108,10 @@ class DataVisualiser ():
 				self.data['program_history'] = self.data['program_history'][10:]
 			if (pp == 6):
 				self.data['program_history'].pop()
+			if (pp == 53):
+				# for count in range(0,100):
+				# 	print(self.data['program_history'][count]['timestamp'])
+				self.data['program_history'] = self.data['program_history'][1:]
 			
 			# readjust start times based on t0
 			self.t0 = self.data['program_history'][0]['start']
