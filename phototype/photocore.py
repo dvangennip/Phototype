@@ -1711,8 +1711,8 @@ class GUI ():
 		pygame.init()
 		# initialise differently per platform
 		if (sys.platform == 'darwin'):
-			self.gui_font       = pygame.font.Font('/Library/Fonts/Arial Bold.ttf', 16)
-			self.gui_font_large = pygame.font.Font('/Library/Fonts/Arial Bold.ttf', 30)
+			self.gui_font       = pygame.font.Font('/System/Library/Fonts/Supplemental/Arial Bold.ttf', 16)
+			self.gui_font_large = pygame.font.Font('/System/Library/Fonts/Supplemental/Arial Bold.ttf', 30)
 			self.screen = pygame.display.set_mode(self.display_size)
 		else:
 			pygame.mouse.set_visible(False)
