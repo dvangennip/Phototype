@@ -5,7 +5,7 @@
 
 from hashlib import md5
 from math import sqrt, pi, cos, sin, atan2, ceil
-from multiprocessing import Process, Queue
+import multiprocessing as mp # or only import? Process, Queue
 import os
 import pickle
 from PIL import Image as PIL_Image, ExifTags
@@ -60,6 +60,13 @@ def main ():
 	if (os.path.exists('nostart.txt')):
 		print('nostart.txt file present, will not start photocore.')
 		exit(0)
+
+	# note: python-3.8+ has changed the default multiprocessing start methof from 'fork' to 'spawn'
+	#       that situation should be handled properly but causes a semlock crash for now
+	#       in the mean time, we revert to fork despite it being thread-unsafe on macOS
+	#       see: https://bugs.python.org/issue33725
+	if (sys.platform == 'darwin'):
+		mp.set_start_method('fork')
 		
 	# define here so it's available later, also in case of exception handling
 	core = None
@@ -401,9 +408,9 @@ class SelfUpdater ():
 
 		if (self.use_updater):
 			# start the importer process in another thread
-			self.updater_queue = Queue()
-			self.process_queue = Queue()
-			self.process       = Process(target=self.run_updater)
+			self.updater_queue = mp.Queue()
+			self.process_queue = mp.Queue()
+			self.process       = mp.Process(target=self.run_updater)
 			self.process.start()
 
 	def update (self):
@@ -638,7 +645,7 @@ class DataManager ():
 		if (sys.platform != 'darwin'):
 			self.hostname = gethostname()
 
-		self.save_external_process = Process(target=self.save_external_uploader)
+		self.save_external_process = mp.Process(target=self.save_external_uploader)
 		self.save_external_process.start()
 		
 	def save_external_uploader (self):
@@ -854,9 +861,9 @@ class DistanceSensor ():
 
 		# start the input measurement process in another thread
 		if (self.use_sensor):
-			self.sensor_queue  = Queue()
-			self.process_queue = Queue()
-			self.process       = Process(target=self.run_sensor_input)
+			self.sensor_queue  = mp.Queue()
+			self.process_queue = mp.Queue()
+			self.process       = mp.Process(target=self.run_sensor_input)
 			self.process.start()
 
 	""" Read distance sensor data over serial connection """
@@ -996,9 +1003,9 @@ class ImageManager ():
 
 		if (self.use_importer):
 			# start the importer process in another thread
-			self.scanner_queue = Queue()
-			self.process_queue = Queue()
-			self.process       = Process(target=self.run_importer)
+			self.scanner_queue = mp.Queue()
+			self.process_queue = mp.Queue()
+			self.process       = mp.Process(target=self.run_importer)
 			self.process.start()
 
 			# also manage a simple webserver interface for image uploads
