@@ -174,6 +174,13 @@ Icons on the status pane by [hirschwolf][19] and [Freepik][20] from Flaticon are
 - Redo the way the distance sensor is read. It is currently imprecise and slow, so it falls short of its intended use. If it works better, the effects of its use can be stronger.
 - Test the shutdown procedure for robustness, as wonky WiFi and perhaps other factors (e.g., threads not terminating properly) can obstruct a proper shutdown and restart. This hinders automatic updating as it may lock the device into a non-functional state.
 - (bug) It appears possible for the same photo to appear next to itself in both modes. The image unloading routine then seems to cause trouble.
+- Version updating is based on taking files from my personal webserver. It would be better to point to a GitHub repo or something like that. As of January 2022, Recent SSL changes have caused crashes, so auto-updates are temporarily disabled. A proper solution would enable updates over `https`.
+
+## Testing on desktop systems
+
+I have only used macOS but there's no technical reason why Windows or Linux won't work. A few pointers:
+- Most of this was developed around `python-3.5` or `3.6`. There are known issues with `python-3.8+` (that are worked around with a January 2022 update but would need proper solving if further development is done).
+- Recent versions of the `pygame` dependency work fine but seem to introduce (or expose) some visual glitches in the status panel.
 
 [1]:	https://www.blender.org/
 [2]:	https://www.raspberrypi.org/downloads/raspbian/
