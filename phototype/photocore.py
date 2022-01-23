@@ -36,6 +36,7 @@ else:
 
 # ----- TODO ------------------------------------------------------------------
 """
+# Status panel: visual glitches (perhaps to dependency updates?)
 # DualDisplay: give some rating feedback (pickers moving up or down, fading out)
 
 # check data export and logging abilities
@@ -115,6 +116,7 @@ class Photocore ():
 		self.do_shutdown            = False
 		self.is_debug               = False
 		self.use_network            = True   # can any web, import, or update services be run?
+		self.do_updates             = False  # currently not functional due to external SSL changes
 		self.last_update            = 0
 		self.memory_usage           = 0
 		self.memory_total           = round(psutil.virtual_memory().total / (1024*1024))
@@ -127,11 +129,14 @@ class Photocore ():
 				self.is_debug = True
 			elif (argument == '-nonet'):
 				self.use_network = False
+				self.do_updates  = False
+			elif (argument == '-noupdate'):
+				self.do_updates  = False
 
 		# initiate all subclasses
 		self.data     = DataManager(core=self)
 		self.network  = NetworkManager()
-		self.updater  = SelfUpdater(core=self, use_updater=self.use_network)
+		self.updater  = SelfUpdater(core=self, use_updater=self.do_updates)
 		self.display  = DisplayManager()
 		self.distance = DistanceSensor()
 		self.images   = ImageManager('../images', '../uploads', core=self, use_import=self.use_network)
@@ -445,7 +450,7 @@ class SelfUpdater ():
 							print('Updater: looking for a newer version...')
 
 						# do a request for a file with version number current + 1
-						online_path = 'http://project.sinds1984.nl/phototype/'
+						online_path = 'https://project.sinds1984.nl/phototype/'
 						path        = 'photocore_v{0}.py'.format(version+1)
 						r = requests.get(online_path + path, stream=True)
 
@@ -1580,9 +1585,9 @@ class InputHandler ():
 		events = pygame.event.get()
 
 		for event in events:
-			if (event.type is QUIT):
+			if (event.type == QUIT):
 				self.core.set_exit()
-			elif (event.type is KEYDOWN):
+			elif (event.type == KEYDOWN):
 				if (event.key == K_ESCAPE):
 					self.core.set_exit()
 				elif (event.key >= 48 and event.key <= 57):
@@ -2048,7 +2053,7 @@ class ProgramBase ():
 		# status panel variables
 		self.current_address          = ''
 		self.current_address_text     = ''
-		self.address_qr_image         = self.gui.get_qrcode_image('http://project.sinds1984.nl')
+		self.address_qr_image         = self.gui.get_qrcode_image('https://project.sinds1984.nl')
 		self.status_panel_pos         = -32
 		self.status_panel_neutral_pos = -32
 		self.status_panel_active      = False
@@ -2197,7 +2202,7 @@ class ProgramBase ():
 				else:
 					self.current_address      = new_address
 					self.current_address_text = 'IP: ' + new_address
-				self.address_qr_image = self.gui.get_qrcode_image('http://' + self.current_address)
+				self.address_qr_image = self.gui.get_qrcode_image('https://' + self.current_address)
 
 		# update on change or every 1/4 second
 		if (self.status_panel_active):
